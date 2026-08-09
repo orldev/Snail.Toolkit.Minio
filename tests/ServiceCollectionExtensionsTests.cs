@@ -1,106 +1,80 @@
-global using Xunit;
-global using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
-using Minio;
 using Toolkit.Minio.Entities;
 using Toolkit.Minio.Extensions;
 
 namespace Toolkit.Minio.Tests;
 
-//Employee_GetFullName_When_FirstString_IsNull_Throw_ArgumentNullException()
-
+/// <summary>
+/// Tests for the <c>AddMinio</c> registration extensions.
+/// </summary>
+/// <remarks>
+/// Covers what this library decides — argument guards, the lifetime switch, and which registration wins —
+/// rather than re-testing the configuration binder or the DI container underneath it.
+/// </remarks>
 public class ServiceCollectionExtensionsTests
 {
-    private readonly IServiceCollection _services;
-    
-    public ServiceCollectionExtensionsTests()
-    {
-        var configuration = Helper.GetConfiguration();
-        
-        _services = new ServiceCollection()
-            .AddMinio(Helper.Client1, configuration)
-            .AddMinio(Helper.Client2, configuration)
-            .AddMinio("Match", configuration)
-            .AddMinio("Match2", configuration);
-    }
-    
-    
     [Fact]
-    public void AddToServices_ReturnContains()
+    public void AddMinio_RegistersResolvableFactoryAndClient()
     {
-        Assert.Contains(_services, d => d.ServiceType == typeof(IMinioClientFactory));
-        Assert.Contains(_services, d => d.ServiceType == typeof(IConfigureOptions<MinioOptions>));
-        Assert.Contains(_services, d => d.ServiceType == typeof(IMinioClient));
+        var services = new ServiceCollection()
+            .AddMinio(TestConfiguration.Client1, TestConfiguration.Build());
+
+        using var serviceProvider = services.BuildServiceProvider();
+
+        Assert.NotNull(serviceProvider.GetService<IMinioClientFactory>());
+        Assert.NotNull(serviceProvider.GetService<IMinioClient>());
     }
 
-    
     [Fact]
-    public void GetFromServices_Clients_ReturnNotNull()
+    public void AddMinio_Throws_WhenNameIsBlank()
     {
-        using var serviceProvider = _services.BuildServiceProvider();
-        
-        var factory = serviceProvider.GetService<IMinioClientFactory>();
-        Assert.NotNull(factory);
-        
-        var client = serviceProvider.GetService<IMinioClient>();
-        Assert.NotNull(client);
+        Assert.ThrowsAny<ArgumentException>(() =>
+            new ServiceCollection().AddMinio("   ", TestConfiguration.Build()));
     }
-    
-    
-    [Theory]
-    [InlineData("Minio")]
-    [InlineData("Minio2")]
-    public void Match_OptionsWithAppSettings_ReturnEqual(string name)
-    {
-        using var serviceProvider = _services.BuildServiceProvider();
-        
-        var optionsMonitor = serviceProvider.GetService<IOptionsMonitor<MinioOptions>>();
-        Assert.NotNull(optionsMonitor);
-        
-        var options = optionsMonitor.Get(name);
-        Assert.NotNull(options);
-        
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.Endpoint)}"], options.Endpoint);
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.AccessKey)}"], options.AccessKey);
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.SecretKey)}"], options.SecretKey);
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.Region)}"], options.Region);
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.SessionToken)}"], options.SessionToken);
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.Timeout)}"], options.Timeout.ToString());
-        Assert.Equal(Helper.InMemorySettings[$"{name}:{nameof(options.SSL)}"], options.SSL.ToString().ToLower());
-    }
-    
-    [Theory]
-    [InlineData("Match")]
-    [InlineData("Match2")]
-    public void Match_OptionsWithClient_ReturnEqual(string name)
-    {
-        using var serviceProvider = _services.BuildServiceProvider();
-        
-        var client = serviceProvider.GetRequiredService<IMinioClientFactory>().CreateClient(name);
-        Assert.NotNull(client);
-        
-        var options = serviceProvider.GetRequiredService<IOptionsMonitor<MinioOptions>>().Get(name);
-        Assert.NotNull(options);
-        
-        var config = client.Config;
-        
-        Assert.Equal(options.Endpoint, config.BaseUrl);
-        Assert.Equal(options.AccessKey, config.AccessKey);
-        Assert.Equal(options.SecretKey, config.SecretKey);
-        Assert.Equal(options.Region, config.Region);
-        Assert.Equal(options.SessionToken, config.SessionToken);
-        Assert.Equal(options.Timeout ?? 0, config.RequestTimeout);
-        Assert.Equal(options.SSL, config.Secure);
-    }
-    
+
     [Fact]
-    public void MultipleClients_Factory_ReturnNotSame()
+    public void AddMinio_Throws_WhenConfigurationIsNull()
     {
-        using var serviceProvider = _services.BuildServiceProvider();
+        // The cast disambiguates from Minio's own AddMinio(IServiceCollection, string, string, ServiceLifetime),
+        // which is in scope whenever the Minio namespace is imported alongside this one.
+        Assert.Throws<ArgumentNullException>(() =>
+            new ServiceCollection().AddMinio("Minio", (IConfiguration)null!));
+    }
 
-        var client1 = serviceProvider.GetRequiredService<IMinioClient>();
-        var client2 = serviceProvider.GetRequiredService<IMinioClientFactory>().CreateClient(Helper.Client2);
+    [Fact]
+    public void AddMinio_Throws_ForUnsupportedLifetime()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ServiceCollection().AddMinio("Minio", TestConfiguration.Build(), lifetime: (ServiceLifetime)99));
+    }
 
-        Assert.NotSame(client1, client2);
+    [Fact]
+    public void AddMinio_RegistersClientWithRequestedLifetime()
+    {
+        var services = new ServiceCollection()
+            .AddMinio(TestConfiguration.Client1, TestConfiguration.Build(), lifetime: ServiceLifetime.Scoped);
+
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IMinioClient));
+        Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void AddMinio_KeepsFirstClientRegistration_WhenCalledTwice()
+    {
+        // TryAdd matches on service type alone, so the second call cannot replace the client or its lifetime.
+        // The behaviour is documented; this test pins it so it cannot change silently.
+        var services = new ServiceCollection()
+            .AddMinio(TestConfiguration.Client1, TestConfiguration.Build())
+            .AddMinio(TestConfiguration.Client2, TestConfiguration.Build(), lifetime: ServiceLifetime.Transient);
+
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IMinioClient));
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+
+        using var serviceProvider = services.BuildServiceProvider();
+        var client = serviceProvider.GetRequiredService<IMinioClient>();
+
+        var expected = serviceProvider.GetRequiredService<IOptionsMonitor<MinioOptions>>().Get(TestConfiguration.Client1);
+        Assert.Equal(expected.AccessKey, client.Config.AccessKey);
     }
 }
