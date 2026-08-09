@@ -31,9 +31,16 @@ public static class MinioExtensions
     /// <param name="exception">The exception to classify.</param>
     /// <returns>The <see cref="MinioErrorType"/> that best describes <paramref name="exception"/>.</returns>
     /// <remarks>
+    /// <para>
     /// The order of the patterns matters: the more specific <see cref="MinioException"/> subclasses are
     /// matched before the <see cref="MinioException"/> catch-all, which is itself matched before the
     /// generic fallback.
+    /// </para>
+    /// <para>
+    /// <see cref="OperationCanceledException"/> means a timeout here rather than caller cancellation: each
+    /// operation rethrows the caller's cancellation before reaching this mapping, so what is left is the
+    /// request timeout the Minio client enforces internally from <see cref="MinioOptions.Timeout"/>.
+    /// </para>
     /// </remarks>
     private static MinioErrorType ToErrorType(this Exception exception) => exception switch
     {
@@ -45,13 +52,14 @@ public static class MinioExtensions
         AccessDeniedException => MinioErrorType.AccessDenied,
         ConnectionException => MinioErrorType.Connection,
         MinioException => MinioErrorType.UnknownMinioError,
+        HttpRequestException => MinioErrorType.Connection,
+        TimeoutException or OperationCanceledException => MinioErrorType.Timeout,
         FileNotFoundException => MinioErrorType.FileNotFound,
         ObjectDisposedException => MinioErrorType.ObjectDisposed,
         NotImplementedException => MinioErrorType.NotImplemented,
         NotSupportedException => MinioErrorType.NotSupported,
         ArgumentNullException => MinioErrorType.ArgumentNull,
         InvalidOperationException => MinioErrorType.InvalidOperation,
-        TimeoutException => MinioErrorType.Timeout,
         _ => MinioErrorType.UnexpectedError
     };
 
