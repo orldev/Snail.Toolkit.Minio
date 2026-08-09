@@ -190,14 +190,36 @@ if (!result.IsSuccess)
 - [MimeTypeMap](https://github.com/samuelneff/MimeTypeMap) - Because guessing file types is still hard.
   Vendored as an **internal** type, so it won't collide with the `MimeTypes` package in your own project.
 
-### Known limitation: ranged reads
+## Running the Tests
 
-`DownloadObjectWithOffsetAndLengthAsync` cannot succeed with Minio 7.0.0 (the current release), which turns
-every HTTP 206 response into a `PartialContentException`. This is upstream, not in this wrapper — the raw
-Minio client fails the same way for `WithOffsetAndLength`, `WithLength`, a hand-written `Range` header, and
-the file-based download path, while the identical request without a range succeeds. The method and its
-integration test are kept in place (the test is skipped with this reason) so both light up when a fixed
-Minio release ships.
+```bash
+dotnet test
+```
+
+One command, no flags, no setup beyond a running Docker daemon.
+
+Almost everything runs against a **real Minio server**, started and disposed by
+[Testcontainers](https://dotnet.testcontainers.org/). Uploads are verified by reading the object back rather
+than by inspecting the request that was sent, so a test passes only when the bytes really round-trip. Failure
+modes are provoked for real too: a missing bucket, rejected credentials, a refused connection, an expired
+request timeout. The whole suite finishes in a few seconds.
+
+Exactly one assertion uses a stubbed transport, because no server can supply it: that a 64-bit range offset
+survives into the `Range` header.
+
+That split is not academic. While the tests were stubbed, `Connection` and `Timeout` failures were silently
+reported as `UnexpectedError` — simulated responses could not reveal it, and a real socket did so immediately.
+
+## Known limitation: ranged reads
+
+`DownloadObjectWithOffsetAndLengthAsync` cannot succeed with the Minio **client** 7.0.0 (the current release),
+which turns every HTTP 206 response into a `PartialContentException`. This is upstream, not in this wrapper —
+the raw Minio client fails the same way for `WithOffsetAndLength`, `WithLength`, a hand-written `Range`
+header, and the file-based download path, while the identical request without a range succeeds.
+
+Upgrading the **server** does not help: the failure reproduces identically against server releases
+`2023-01-31` and `2025-09-07`. The fix has to come from a new client release. The method and its end-to-end
+test are kept in place (the test is skipped with this reason) so both light up when one ships.
 
 ## License
 
