@@ -1,9 +1,9 @@
 using Minio.DataModel;
 using Minio.DataModel.Args;
 using Minio.DataModel.Response;
-using MimeTypes;
 using Minio.Exceptions;
 using Toolkit.Minio.Entities;
+using Toolkit.Minio.Internal;
 
 namespace Toolkit.Minio.Extensions;
 

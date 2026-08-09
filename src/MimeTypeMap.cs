@@ -1,9 +1,17 @@
-namespace MimeTypes;
+using System.Diagnostics.CodeAnalysis;
+
+namespace Toolkit.Minio.Internal;
 
 /// <summary>
-/// Class MimeTypeMap.
+/// Maps file extensions to MIME types and back.
 /// </summary>
-public static class MimeTypeMap
+/// <remarks>
+/// Vendored from <see href="https://github.com/samuelneff/MimeTypeMap"/>. Deliberately
+/// <c>internal</c>: exposing it publicly under the original <c>MimeTypes</c> namespace would
+/// collide with the <c>MimeTypesMap</c>/<c>MimeTypes</c> NuGet packages in consuming projects
+/// and produce ambiguous-reference compile errors.
+/// </remarks>
+internal static class MimeTypeMap
 {
     private const string Dot = ".";
     private const string QuestionMark = "?";
@@ -753,7 +761,7 @@ public static class MimeTypeMap
     /// <param name="mimeType">The variable to store the MIME type.</param>
     /// <returns>The MIME type.</returns>
     /// <exception cref="ArgumentNullException" />
-    public static bool TryGetMimeType(string str, out string mimeType) 
+    public static bool TryGetMimeType(string str, [NotNullWhen(true)] out string? mimeType)
     {
         if (str == null) {
             throw new ArgumentNullException(nameof(str));
