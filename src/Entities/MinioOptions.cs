@@ -11,15 +11,15 @@ namespace Toolkit.Minio.Entities;
 /// allowing for configuration through appsettings.json, environment variables, or other configuration providers.
 /// </para>
 /// <para>
-/// All properties in this class are optional, but typically at minimum an <see cref="Endpoint"/> 
-/// and credentials (<see cref="AccessKey"/> and <see cref="SecretKey"/>) are required for authenticated access.
+/// <see cref="Endpoint"/>, <see cref="AccessKey"/>, and <see cref="SecretKey"/> are required; the remaining
+/// properties are optional. The section name matches the name passed to <c>AddMinio</c> and defaults to "Minio".
 /// </para>
 /// </remarks>
 /// <example>
 /// Example configuration in appsettings.json:
 /// <code>
 /// {
-///   "MinioOptions": {
+///   "Minio": {
 ///     "Endpoint": "play.min.io",
 ///     "AccessKey": "your-access-key",
 ///     "SecretKey": "your-secret-key",
@@ -46,8 +46,8 @@ public class MinioOptions
     /// </list>
     /// </value>
     /// <remarks>
-    /// This property is required for most scenarios. If not specified, the client may use default endpoints
-    /// depending on the service provider.
+    /// Required. <see cref="IMinioClientFactory.CreateClient"/> throws an
+    /// <see cref="InvalidOperationException"/> naming the configuration section when this value is missing.
     /// </remarks>
     public string? Endpoint { get; set; }
     
@@ -55,8 +55,8 @@ public class MinioOptions
     /// Gets or sets the access key (user ID) that uniquely identifies your account.
     /// </summary>
     /// <value>
-    /// The access key string used for authentication. This field is optional and can be omitted for anonymous access
-    /// to public buckets, but is required for most authenticated operations.
+    /// The access key string used for authentication. Required — the underlying Minio client rejects
+    /// anonymous access when the client is built.
     /// </value>
     /// <remarks>
     /// For Minio, this is typically a randomly generated string. For AWS S3, this is your AWS Access Key ID.
@@ -67,8 +67,8 @@ public class MinioOptions
     /// Gets or sets the secret key (password) for your account.
     /// </summary>
     /// <value>
-    /// The secret key string used for authentication. This field is optional and can be omitted for anonymous access,
-    /// but must be provided along with <see cref="AccessKey"/> for authenticated operations.
+    /// The secret key string used for authentication. Required, and must be provided together with
+    /// <see cref="AccessKey"/>.
     /// </value>
     /// <remarks>
     /// This value should be kept secure and never exposed in client-side code or public repositories.
