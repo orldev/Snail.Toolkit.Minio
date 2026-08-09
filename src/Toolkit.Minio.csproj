@@ -1,34 +1,36 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <PackageId>Snail.Toolkit.Minio</PackageId>
         <PackageTags>Minio</PackageTags>
         <Title>Toolkit.Minio</Title>
         <Authors>Toolkit</Authors>
         <Description>Extension for the framework Minio</Description>
-        <RepositoryUrl>https://github.com/orldev/Toolkit.Minio</RepositoryUrl>
+        <RepositoryUrl>https://github.com/orldev/Snail.Toolkit.Minio</RepositoryUrl>
         <Copyright>Toolkit, 2023</Copyright>
-        <PackageProjectUrl>https://github.com/orldev/Toolkit.Minio</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/orldev/Snail.Toolkit.Minio</PackageProjectUrl>
         <RepositoryType>GitHub</RepositoryType>
-        <!-- SourceLink specific details: https://github.com/dotnet/sourcelink/blob/master/README.md -->
         <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
     </PropertyGroup>
-    
+
     <ItemGroup>
         <None Include="..\README.md" Pack="true" PackagePath="\"/>
     </ItemGroup>
-    
+
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.4" />
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.4" />
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.4" />
+        <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
         <PackageReference Include="Minio" Version="7.0.0" />
     </ItemGroup>
-
 </Project>
