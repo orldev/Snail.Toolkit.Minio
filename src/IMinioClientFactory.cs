@@ -1,5 +1,3 @@
-global using Minio;
-
 namespace Toolkit.Minio;
 
 /// <summary>
