@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Toolkit.Minio.Entities;
 
 /// <summary>
@@ -49,7 +51,7 @@ public class MinioResult
     public bool IsSuccess => ErrorType == MinioErrorType.None;
     
     /// <summary>
-    /// Gets or sets the type of error that occurred during the operation, if any.
+    /// Gets the type of error that occurred during the operation, if any.
     /// </summary>
     /// <value>
     /// A <see cref="MinioErrorType"/> value indicating the specific type of error that occurred,
@@ -57,12 +59,13 @@ public class MinioResult
     /// </value>
     /// <remarks>
     /// This property allows callers to handle different error scenarios specifically without
-    /// relying on exception types or string matching of error messages.
+    /// relying on exception types or string matching of error messages. It is init-only: a result
+    /// cannot be flipped from success to failure after it has been created.
     /// </remarks>
-    public MinioErrorType ErrorType { get; set; }
-    
+    public MinioErrorType ErrorType { get; init; }
+
     /// <summary>
-    /// Gets or sets a descriptive error message providing details about the failure.
+    /// Gets a descriptive error message providing details about the failure.
     /// </summary>
     /// <value>
     /// A string containing error details, or <c>null</c> if the operation succeeded.
@@ -71,7 +74,7 @@ public class MinioResult
     /// This message is typically the original exception message or a user-friendly description
     /// of what went wrong during the Minio operation.
     /// </remarks>
-    public string? ErrorMessage { get; set; }
+    public string? ErrorMessage { get; init; }
     
     /// <summary>
     /// Creates a new successful <see cref="MinioResult"/> instance.
@@ -88,7 +91,6 @@ public class MinioResult
     /// <param name="errorType">The type of error that occurred.</param>
     /// <param name="message">A descriptive error message.</param>
     /// <returns>A <see cref="MinioResult"/> representing a failed operation.</returns>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="message"/> is null.</exception>
     /// <remarks>
     /// Use this method to create result instances for failed operations, providing specific error
     /// information that can be used for logging, user feedback, or error recovery.
@@ -134,7 +136,7 @@ public class MinioResult
 public class MinioResult<T> : MinioResult
 {
     /// <summary>
-    /// Gets or sets the value returned by a successful operation.
+    /// Gets the value returned by a successful operation.
     /// </summary>
     /// <value>
     /// The operation result value of type <typeparamref name="T"/>, or <c>default(T)</c> if the operation failed.
@@ -145,12 +147,35 @@ public class MinioResult<T> : MinioResult
     /// When the operation fails, this property may be <c>null</c> or contain a default value.
     /// </para>
     /// <para>
-    /// For safe access, use pattern matching with the <see cref="T:MinioResultExtensions.Match{TInput, TOutput}"/>
-    /// extension method or check <see cref="MinioResult.IsSuccess"/> before accessing this property.
+    /// For safe access, use <see cref="TryGetValue"/>, pattern matching via the <c>Match</c> extension
+    /// methods, or check <see cref="MinioResult.IsSuccess"/> before accessing this property.
     /// </para>
     /// </remarks>
-    public T? Value { get; set; }
-    
+    public T? Value { get; init; }
+
+    /// <summary>
+    /// Gets the value of a successful result without risking a null dereference on failure.
+    /// </summary>
+    /// <param name="value">
+    /// When this method returns <see langword="true"/>, contains the value produced by the operation;
+    /// otherwise <c>default(T)</c>.
+    /// </param>
+    /// <returns><see langword="true"/> if the operation succeeded; otherwise <see langword="false"/>.</returns>
+    /// <example>
+    /// <code>
+    /// if ((await client.DownloadObjectAsync("bucket", "object")).TryGetValue(out var stream))
+    /// {
+    ///     using (stream) { /* ... */ }
+    /// }
+    /// </code>
+    /// </example>
+    public bool TryGetValue([NotNullWhen(true)] out T? value)
+    {
+        value = IsSuccess ? Value : default;
+        return IsSuccess && value is not null;
+    }
+
+
     /// <summary>
     /// Creates a new successful <see cref="MinioResult{T}"/> instance with the specified value.
     /// </summary>
@@ -168,7 +193,6 @@ public class MinioResult<T> : MinioResult
     /// <param name="errorType">The type of error that occurred.</param>
     /// <param name="message">A descriptive error message.</param>
     /// <returns>A <see cref="MinioResult{T}"/> representing a failed operation.</returns>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="message"/> is null.</exception>
     /// <remarks>
     /// Use this method to create result instances for failed operations that would normally return a value.
     /// The <see cref="Value"/> property will be set to <c>default(T)</c> for failed results.
