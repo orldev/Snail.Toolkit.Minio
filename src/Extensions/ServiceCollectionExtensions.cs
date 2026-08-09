@@ -67,10 +67,10 @@ public static class ServiceCollectionExtensions
     /// <param name="lifetime">The service lifetime for the Minio client. Defaults to <see cref="ServiceLifetime.Singleton"/>.</param>
     /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
     /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="services"/>, <paramref name="name"/>, or <paramref name="configuration"/> is null.
+    /// Thrown when <paramref name="services"/> or <paramref name="configuration"/> is null.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="name"/> is empty or whitespace.
+    /// Thrown when <paramref name="name"/> is null, empty, or whitespace.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="lifetime"/> is not a valid <see cref="ServiceLifetime"/> value.
@@ -96,6 +96,13 @@ public static class ServiceCollectionExtensions
     /// When resolving <see cref="IMinioClient"/> from the dependency injection container,
     /// the client will be configured with both the named options and any additional configuration
     /// provided via the <paramref name="configureClient"/> delegate.
+    /// </para>
+    /// <para>
+    /// <b>Only the first call wins for the unnamed <see cref="IMinioClient"/> registration.</b> Named options
+    /// accumulate across calls, but <see cref="IMinioClient"/> is registered with <c>TryAdd</c>, which matches on
+    /// service type alone. A second <c>AddMinio</c> therefore leaves both the client and the <paramref name="lifetime"/>
+    /// of the first call in place. Resolve additional configurations through
+    /// <see cref="IMinioClientFactory.CreateClient"/> rather than expecting a second <see cref="IMinioClient"/>.
     /// </para>
     /// </remarks>
     /// <example>
@@ -123,6 +130,10 @@ public static class ServiceCollectionExtensions
         Action<IMinioClient>? configureClient = null,
         ServiceLifetime lifetime = ServiceLifetime.Singleton)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
         services.Configure<MinioOptions>(name, configuration.GetSection(name));
         services.TryAddSingleton<IMinioClientFactory, MinioClientFactory>();
         switch (lifetime)
