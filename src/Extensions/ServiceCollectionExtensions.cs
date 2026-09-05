@@ -26,101 +26,100 @@ namespace Snail.Toolkit.Minio.Extensions;
 /// </remarks>
 public static class ServiceCollectionExtensions
 {
-    /// <summary>
-    /// Registers the default server, read from the <c>Minio</c> configuration section.
-    /// </summary>
-    /// <param name="services">The container to add to.</param>
-    /// <param name="configuration">The configuration to bind from.</param>
-    /// <param name="sectionName">The section to bind, when it is not named <c>Minio</c>.</param>
-    /// <param name="configureClient">Applied last to the SDK client, overriding what configuration set.</param>
-    /// <returns>The same container, so calls can be chained.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configuration"/> is null.</exception>
-    /// <example>
-    /// <code>
-    /// services.AddMinio(builder.Configuration);
-    ///
-    /// var stored = await storage.PutAsync("reports", file.OpenReadStream());
-    /// </code>
-    /// </example>
-    public static IServiceCollection AddMinio(
-        this IServiceCollection services,
-        IConfiguration configuration,
-        string sectionName = MinioOptions.SectionName,
-        Action<IMinioClient>? configureClient = null)
+    extension(IServiceCollection services)
     {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sectionName);
+        /// <summary>
+        /// Registers the default server, read from the <c>Minio</c> configuration section.
+        /// </summary>
+        /// <param name="configuration">The configuration to bind from.</param>
+        /// <param name="sectionName">The section to bind, when it is not named <c>Minio</c>.</param>
+        /// <param name="configureClient">Applied last to the SDK client, overriding what configuration set.</param>
+        /// <returns>The same container, so calls can be chained.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configuration"/> is null.</exception>
+        /// <example>
+        /// <code>
+        /// services.AddMinio(builder.Configuration);
+        ///
+        /// var stored = await storage.PutAsync("reports", file.OpenReadStream());
+        /// </code>
+        /// </example>
+        public IServiceCollection AddMinio(
+            IConfiguration configuration,
+            string sectionName = MinioOptions.SectionName,
+            Action<IMinioClient>? configureClient = null)
+        {
+            ArgumentNullException.ThrowIfNull(services);
+            ArgumentNullException.ThrowIfNull(configuration);
+            ArgumentException.ThrowIfNullOrWhiteSpace(sectionName);
 
-        services.AddKeyedMinio(MinioOptions.SectionName, configuration, sectionName, configureClient);
+            services.AddKeyedMinio(MinioOptions.SectionName, configuration, sectionName, configureClient);
 
-        services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IMinioClient>(MinioOptions.SectionName));
-        services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IObjectStorage>(MinioOptions.SectionName));
-        services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IBuckets>(MinioOptions.SectionName));
+            services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IMinioClient>(MinioOptions.SectionName));
+            services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IObjectStorage>(MinioOptions.SectionName));
+            services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IBuckets>(MinioOptions.SectionName));
 
-        return services;
-    }
+            return services;
+        }
 
-    /// <summary>
-    /// Registers a further server under a key of its own.
-    /// </summary>
-    /// <param name="services">The container to add to.</param>
-    /// <param name="name">The key, which is also the name of the options instance.</param>
-    /// <param name="configuration">The configuration to bind from.</param>
-    /// <param name="sectionName">The section to bind, when it is not named after the key.</param>
-    /// <param name="configureClient">Applied last to the SDK client, overriding what configuration set.</param>
-    /// <returns>The same container, so calls can be chained.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configuration"/> is null.</exception>
-    /// <exception cref="ArgumentException"><paramref name="name"/> is blank.</exception>
-    /// <example>
-    /// <code>
-    /// services.AddKeyedMinio("archive", builder.Configuration);
-    ///
-    /// public sealed class Reports([FromKeyedServices("archive")] IObjectStorage archive);
-    /// </code>
-    /// </example>
-    public static IServiceCollection AddKeyedMinio(
-        this IServiceCollection services,
-        string name,
-        IConfiguration configuration,
-        string? sectionName = null,
-        Action<IMinioClient>? configureClient = null)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        /// <summary>
+        /// Registers a further server under a key of its own.
+        /// </summary>
+        /// <param name="name">The key, which is also the name of the options instance.</param>
+        /// <param name="configuration">The configuration to bind from.</param>
+        /// <param name="sectionName">The section to bind, when it is not named after the key.</param>
+        /// <param name="configureClient">Applied last to the SDK client, overriding what configuration set.</param>
+        /// <returns>The same container, so calls can be chained.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configuration"/> is null.</exception>
+        /// <exception cref="ArgumentException"><paramref name="name"/> is blank.</exception>
+        /// <example>
+        /// <code>
+        /// services.AddKeyedMinio("archive", builder.Configuration);
+        ///
+        /// public sealed class Reports([FromKeyedServices("archive")] IObjectStorage archive);
+        /// </code>
+        /// </example>
+        public IServiceCollection AddKeyedMinio(
+            string name,
+            IConfiguration configuration,
+            string? sectionName = null,
+            Action<IMinioClient>? configureClient = null)
+        {
+            ArgumentNullException.ThrowIfNull(services);
+            ArgumentNullException.ThrowIfNull(configuration);
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        services.AddOptions<MinioOptions>(name)
-            .Bind(configuration.GetSection(sectionName ?? name))
-            .ValidateOnStart();
+            services.AddOptions<MinioOptions>(name)
+                .Bind(configuration.GetSection(sectionName ?? name))
+                .ValidateOnStart();
 
-        services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<IValidateOptions<MinioOptions>, MinioOptionsValidator>());
+            services.TryAddEnumerable(
+                ServiceDescriptor.Singleton<IValidateOptions<MinioOptions>, MinioOptionsValidator>());
 
-        services.TryAddSingleton<MinioTransport>();
-        services.TryAddSingleton<IMinioClients, MinioClients>();
+            services.TryAddSingleton<MinioTransport>();
+            services.TryAddSingleton<IMinioClients, MinioClients>();
 
-        services.TryAddKeyedSingleton<IMinioClient>(
-            name,
-            (provider, _) => provider.GetRequiredService<IMinioClients>().Create(name, configureClient));
-
-        services.TryAddKeyedSingleton(
-            name,
-            (provider, _) => new MinioObjectStorage(
+            services.TryAddKeyedSingleton<IMinioClient>(
                 name,
-                provider.GetRequiredKeyedService<IMinioClient>(name),
-                provider.GetRequiredService<MinioTransport>().CreateClient(name),
-                provider.GetRequiredService<IOptionsMonitor<MinioOptions>>(),
-                provider.GetService<ILogger<MinioObjectStorage>>() ?? NullLogger<MinioObjectStorage>.Instance));
+                (provider, _) => provider.GetRequiredService<IMinioClients>().Create(name, configureClient));
 
-        services.TryAddKeyedSingleton<IObjectStorage>(
-            name,
-            (provider, _) => provider.GetRequiredKeyedService<MinioObjectStorage>(name));
+            services.TryAddKeyedSingleton(
+                name,
+                (provider, _) => new MinioObjectStorage(
+                    name,
+                    provider.GetRequiredKeyedService<IMinioClient>(name),
+                    provider.GetRequiredService<MinioTransport>().CreateClient(name),
+                    provider.GetRequiredService<IOptionsMonitor<MinioOptions>>(),
+                    provider.GetService<ILogger<MinioObjectStorage>>() ?? NullLogger<MinioObjectStorage>.Instance));
 
-        services.TryAddKeyedSingleton<IBuckets>(
-            name,
-            (provider, _) => provider.GetRequiredKeyedService<MinioObjectStorage>(name));
+            services.TryAddKeyedSingleton<IObjectStorage>(
+                name,
+                (provider, _) => provider.GetRequiredKeyedService<MinioObjectStorage>(name));
 
-        return services;
+            services.TryAddKeyedSingleton<IBuckets>(
+                name,
+                (provider, _) => provider.GetRequiredKeyedService<MinioObjectStorage>(name));
+
+            return services;
+        }
     }
 }

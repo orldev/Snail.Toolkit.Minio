@@ -25,95 +25,91 @@ namespace Snail.Toolkit.Minio.Adapters;
 /// </remarks>
 public static class MinioClientExtensions
 {
-    /// <summary>Uploads an object.</summary>
-    /// <param name="client">The client to call.</param>
-    /// <param name="bucket">The bucket to write into.</param>
-    /// <param name="args">Configures the request; the bucket is already set.</param>
-    /// <param name="cancellationToken">Cancels the upload.</param>
-    /// <returns>The server's answer, or why the upload failed.</returns>
-    public static Task<StorageResult<PutObjectResponse>> PutObjectAsync(
-        this IMinioClient client,
-        string bucket,
-        Action<PutObjectArgs>? args = null,
-        CancellationToken cancellationToken = default)
+    extension(IMinioClient client)
     {
-        ArgumentNullException.ThrowIfNull(client);
+        /// <summary>Uploads an object.</summary>
+        /// <param name="bucket">The bucket to write into.</param>
+        /// <param name="args">Configures the request; the bucket is already set.</param>
+        /// <param name="cancellationToken">Cancels the upload.</param>
+        /// <returns>The server's answer, or why the upload failed.</returns>
+        public Task<StorageResult<PutObjectResponse>> PutObjectAsync(
+            string bucket,
+            Action<PutObjectArgs>? args = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(client);
 
-        var request = new PutObjectArgs().WithBucket(bucket);
-        args?.Invoke(request);
+            var request = new PutObjectArgs().WithBucket(bucket);
+            args?.Invoke(request);
 
-        return ExecuteAsync(() => client.PutObjectAsync(request, cancellationToken), cancellationToken);
-    }
+            return ExecuteAsync(() => client.PutObjectAsync(request, cancellationToken), cancellationToken);
+        }
 
-    /// <summary>Reads an object's metadata without reading its bytes.</summary>
-    /// <param name="client">The client to call.</param>
-    /// <param name="bucket">The bucket to look in.</param>
-    /// <param name="name">The object to describe.</param>
-    /// <param name="args">Configures the request; bucket and object are already set.</param>
-    /// <param name="cancellationToken">Cancels the request.</param>
-    /// <returns>The object's metadata, or why it could not be read.</returns>
-    public static Task<StorageResult<ObjectStat>> StatObjectAsync(
-        this IMinioClient client,
-        string bucket,
-        string name,
-        Action<StatObjectArgs>? args = null,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(client);
+        /// <summary>Reads an object's metadata without reading its bytes.</summary>
+        /// <param name="bucket">The bucket to look in.</param>
+        /// <param name="name">The object to describe.</param>
+        /// <param name="args">Configures the request; bucket and object are already set.</param>
+        /// <param name="cancellationToken">Cancels the request.</param>
+        /// <returns>The object's metadata, or why it could not be read.</returns>
+        public Task<StorageResult<ObjectStat>> StatObjectAsync(
+            string bucket,
+            string name,
+            Action<StatObjectArgs>? args = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(client);
 
-        var request = new StatObjectArgs().WithBucket(bucket).WithObject(name);
-        args?.Invoke(request);
+            var request = new StatObjectArgs().WithBucket(bucket).WithObject(name);
+            args?.Invoke(request);
 
-        return ExecuteAsync(() => client.StatObjectAsync(request, cancellationToken), cancellationToken);
-    }
+            return ExecuteAsync(() => client.StatObjectAsync(request, cancellationToken), cancellationToken);
+        }
 
-    /// <summary>Reads an object through a callback stream of the caller's.</summary>
-    /// <param name="client">The client to call.</param>
-    /// <param name="bucket">The bucket to read from.</param>
-    /// <param name="name">The object to read.</param>
-    /// <param name="args">Configures the request, including the callback that receives the bytes.</param>
-    /// <param name="cancellationToken">Cancels the read.</param>
-    /// <returns>The object's metadata, or why it could not be read.</returns>
-    /// <remarks>
-    /// Minio 7.0.0 raises <c>PartialContentException</c> for every HTTP 206 answer, so a request configured
-    /// with <c>WithOffsetAndLength</c> fails here and delivers no bytes at all. Ranged reads work through
-    /// <see cref="Ports.IObjectStorage.DownloadRangeToAsync"/>, which does not go through this path.
-    /// </remarks>
-    public static Task<StorageResult<ObjectStat>> GetObjectAsync(
-        this IMinioClient client,
-        string bucket,
-        string name,
-        Action<GetObjectArgs>? args = null,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(client);
+        /// <summary>Reads an object through a callback stream of the caller's.</summary>
+        /// <param name="bucket">The bucket to read from.</param>
+        /// <param name="name">The object to read.</param>
+        /// <param name="args">Configures the request, including the callback that receives the bytes.</param>
+        /// <param name="cancellationToken">Cancels the read.</param>
+        /// <returns>The object's metadata, or why it could not be read.</returns>
+        /// <remarks>
+        /// Minio 7.0.0 raises <c>PartialContentException</c> for every HTTP 206 answer, so a request configured
+        /// with <c>WithOffsetAndLength</c> fails here and delivers no bytes at all. Ranged reads work through
+        /// <see cref="Ports.IObjectStorage.DownloadRangeToAsync"/>, which does not go through this path.
+        /// </remarks>
+        public Task<StorageResult<ObjectStat>> GetObjectAsync(
+            string bucket,
+            string name,
+            Action<GetObjectArgs>? args = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(client);
 
-        var request = new GetObjectArgs().WithBucket(bucket).WithObject(name);
-        args?.Invoke(request);
+            var request = new GetObjectArgs().WithBucket(bucket).WithObject(name);
+            args?.Invoke(request);
 
-        return ExecuteAsync(() => client.GetObjectAsync(request, cancellationToken), cancellationToken);
-    }
+            return ExecuteAsync(() => client.GetObjectAsync(request, cancellationToken), cancellationToken);
+        }
 
-    /// <summary>Removes an object.</summary>
-    /// <param name="client">The client to call.</param>
-    /// <param name="bucket">The bucket to remove from.</param>
-    /// <param name="name">The object to remove.</param>
-    /// <param name="args">Configures the request; bucket and object are already set.</param>
-    /// <param name="cancellationToken">Cancels the request.</param>
-    /// <returns>Success, or why the object could not be removed.</returns>
-    public static Task<StorageResult> RemoveObjectAsync(
-        this IMinioClient client,
-        string bucket,
-        string name,
-        Action<RemoveObjectArgs>? args = null,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(client);
+        /// <summary>Removes an object.</summary>
+        /// <param name="bucket">The bucket to remove from.</param>
+        /// <param name="name">The object to remove.</param>
+        /// <param name="args">Configures the request; bucket and object are already set.</param>
+        /// <param name="cancellationToken">Cancels the request.</param>
+        /// <returns>Success, or why the object could not be removed.</returns>
+        public Task<StorageResult> RemoveObjectAsync(
+            string bucket,
+            string name,
+            Action<RemoveObjectArgs>? args = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(client);
 
-        var request = new RemoveObjectArgs().WithBucket(bucket).WithObject(name);
-        args?.Invoke(request);
+            var request = new RemoveObjectArgs().WithBucket(bucket).WithObject(name);
+            args?.Invoke(request);
 
-        return ExecuteAsync(() => client.RemoveObjectAsync(request, cancellationToken), cancellationToken);
+            return ExecuteAsync(() => client.RemoveObjectAsync(request, cancellationToken), cancellationToken);
+        }
+
     }
 
     /// <summary>

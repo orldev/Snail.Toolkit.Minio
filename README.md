@@ -1,82 +1,45 @@
 # Snail.Toolkit.Minio
 
-Object storage for .NET over Minio and any other S3-compatible server. The API you code against names no
-vendor type, failures come back as data, objects stream instead of being buffered, and ranged reads work —
-which, as it turns out, is not a given.
+Object storage for .NET over MinIO and any S3-compatible server.
+
+Inject `IObjectStorage` and get on with it: upload, download, stream, list and share objects. Failures come
+back as data instead of exceptions, reads stream instead of buffering, ranged reads work, and retries, a
+circuit breaker, tracing and logging are already wired in.
 
 ```bash
 dotnet add package Snail.Toolkit.Minio
 ```
 
-Targets `net8.0`, `net9.0` and `net10.0`.
+---
 
-## Registration
+## Quick start
 
-```csharp
-builder.Services.AddMinio(builder.Configuration);
-```
-
-That reads the `Minio` section and registers `IObjectStorage`. A second server gets a key of its own:
-
-```csharp
-builder.Services.AddMinio(builder.Configuration);
-builder.Services.AddKeyedMinio("Archive", builder.Configuration);
-
-public sealed class Reports(
-    IObjectStorage storage,
-    [FromKeyedServices("Archive")] IObjectStorage archive);
-```
-
-A section named something other than the key is bound explicitly:
-
-```csharp
-builder.Services.AddKeyedMinio("Archive", builder.Configuration, sectionName: "Storage:Archive");
-```
-
-Anything the SDK client needs beyond configuration is applied last, overriding what configuration set:
-
-```csharp
-builder.Services.AddMinio(
-    builder.Configuration,
-    configureClient: client => client.WithProxy(new WebProxy("http://proxy:8080")));
-```
-
-Everything is registered as a singleton. A storage client owns connections and is safe to share; there is
-no lifetime knob, because a per-request one leaves the container holding every client it ever built.
-
-## Configuration
+**1. Configure** — `appsettings.json`:
 
 ```json
 {
   "Minio": {
-    "Endpoint": "play.min.io",
-    "AccessKey": "accessKey",
-    "SecretKey": "secretKey",
-    "Region": "us-east-1",
-    "SessionToken": "sessionToken",
-    "IsSecure": true,
-    "Timeout": "00:00:30",
-    "ConnectionLifetime": "00:05:00",
-    "MaxConnectionsPerServer": 64,
-    "RetryAttempts": 2,
-    "RetryDelay": "00:00:00.200",
-    "CircuitBreakFailures": 10,
-    "CircuitBreakDuration": "00:00:05",
-    "SignedUrlLifetime": "00:01:00"
+    "Endpoint": "localhost:9000",
+    "AccessKey": "minioadmin",
+    "SecretKey": "minioadmin",
+    "IsSecure": false
   }
 }
 ```
 
-`Endpoint`, `AccessKey` and `SecretKey` are required. Everything else has a working default.
-
-Settings are validated when the host starts, not when the first request runs. A missing section, an
-endpoint carrying a scheme, a zero timeout, a negative retry count — each stops the application with a
-message naming the setting, instead of surfacing later as a storage failure that blames the network.
-
-## Reading and writing
+**2. Register** — `Program.cs`:
 
 ```csharp
-public sealed class Reports(IObjectStorage storage)
+builder.Services.AddMinio(builder.Configuration);
+```
+
+**3. Use** — anywhere:
+
+```csharp
+using Snail.Toolkit.Minio.Domain;
+using Snail.Toolkit.Minio.Ports;
+
+public sealed class Reports(IObjectStorage storage, ILogger<Reports> logger)
 {
     public async Task<string?> SaveAsync(Stream file, string name, CancellationToken token)
     {
@@ -86,69 +49,137 @@ public sealed class Reports(IObjectStorage storage)
             new UploadOptions { Name = name, MediaType = "application/pdf" },
             token);
 
-        return stored.Match(
-            onSuccess: report => report.Name,
-            onFailure: error => null);
+        if (!stored.TryGetValue(out var report))
+        {
+            logger.LogWarning("upload failed: {Error}", stored.Error);
+
+            return null;
+        }
+
+        return report.Name;
     }
 }
 ```
 
-The whole contract:
+If the settings are wrong — a missing section, an endpoint with `https://` in it, a zero timeout — the
+application does not start, and the message names the setting.
 
-| Call | Answers |
-| --- | --- |
-| `PutAsync(bucket, content, options, ct)` | `StoredObject` — what was stored |
-| `GetAsync(bucket, name, ct)` | `ObjectContent` — metadata plus a live stream you own |
-| `DownloadToAsync(bucket, name, destination, ct)` | `StoredObject`, having copied the bytes |
-| `DownloadRangeToAsync(bucket, name, destination, offset, length, ct)` | `StoredObject`, having copied the range |
-| `StatAsync(bucket, name, ct)` | `StoredObject`, without reading the bytes |
-| `RemoveAsync(bucket, name, ct)` | success, or why not |
-| `ExistsAsync(bucket, name, ct)` | whether it is there — a missing object is `false`, not a failure |
-| `ListAsync(bucket, options, ct)` | one page of objects, plus a cursor when more follow |
-| `EnumerateAsync(bucket, options, ct)` | every object in turn, for walking a whole bucket |
-| `SignedUrlAsync(bucket, name, lifetime, ct)` | a URL that reads the object, for handing to a browser |
-| `SignedUploadUrlAsync(bucket, name, lifetime, ct)` | a URL that accepts a PUT, so the bytes never pass through you |
+---
 
-`UploadOptions` decides the rest: `Name` (generated when omitted), `MediaType` (derived from the name when
-omitted), `Size` (required only for a stream that cannot seek), `AppendExtension`, and `Metadata`.
+## How to do the usual things
 
-Metadata written with an object comes back on every call that describes it — `PutAsync`, `StatAsync` and
-`GetAsync` — under the names it was written with, without the `x-amz-meta-` the wire adds and removes. What
-the protocol defines for itself, the media type and the length, is not repeated there. Values have to be
-US-ASCII, because that is what a header can carry; anything else is refused with `InvalidArgument` naming
-the entry rather than failing later as a transport error.
+### Upload what a browser sent
 
-## Listing
+A request body cannot seek, so state its size:
+
+```csharp
+app.MapPost("/reports", async (IFormFile file, IObjectStorage storage, CancellationToken token) =>
+{
+    await using var content = file.OpenReadStream();
+
+    var stored = await storage.PutAsync(
+        "reports",
+        content,
+        new UploadOptions
+        {
+            Name = file.FileName,
+            MediaType = file.ContentType,
+            Size = file.Length
+        },
+        token);
+
+    return stored.Match(
+        onSuccess: report => Results.Created($"/reports/{report.Name}", report),
+        onFailure: error => Results.Problem(error.Message));
+});
+```
+
+Leave `Name` out and a name is generated for you. Leave `MediaType` out and it is derived from the name.
+
+### Send a file to the client without buffering it
+
+```csharp
+app.MapGet("/reports/{name}", async (string name, IObjectStorage storage, CancellationToken token) =>
+{
+    var read = await storage.GetAsync("reports", name, token);
+
+    if (!read.TryGetValue(out var content))
+        return read.Error.Kind switch
+        {
+            StorageErrorKind.ObjectNotFound => Results.NotFound(),
+            StorageErrorKind.AccessDenied => Results.Forbid(),
+            _ => Results.Problem(read.Error.Message)
+        };
+
+    return Results.Stream(content.Stream, content.Metadata.MediaType, name);
+});
+```
+
+`content.Stream` is the connection, not a copy in memory — an object larger than your RAM costs a buffer.
+You own it: dispose it, and the connection goes with it.
+
+### Serve part of a file
+
+```csharp
+await storage.DownloadRangeToAsync("videos", "clip.mp4", response.Body, offset: 1_048_576, length: 65_536);
+```
+
+Offsets are 64-bit, so ranges past 2 GB work. If the copy fails half way, a seekable destination is rewound
+— you never get a half-written file that claims to have failed.
+
+### Copy into a file, a buffer, anything writable
+
+```csharp
+await using var file = File.Create(path);
+
+var read = await storage.DownloadToAsync("reports", "q3.pdf", file, token);
+```
+
+### Let the browser do the transfer
+
+```csharp
+var link = await storage.SignedUrlAsync("reports", "q3.pdf", TimeSpan.FromMinutes(10));
+
+// upload straight from the browser, bytes never touch this application
+var slot = await storage.SignedUploadUrlAsync("uploads", $"{Guid.NewGuid():N}.jpg", TimeSpan.FromMinutes(5));
+```
+
+Signing happens locally; nothing is asked of the server. The URL carries your credentials' authority while
+it lives, so hand it to a browser, not to a log.
+
+### List a folder
+
+```csharp
+var level = await storage.ListAsync("reports", new ListOptions { IsRecursive = false });
+
+level.Value.Objects;    // top-level files
+level.Value.Prefixes;   // "2026/", "2025/" — what folders look like in a store that has none
+```
+
+Paged:
 
 ```csharp
 var page = await storage.ListAsync("reports", new ListOptions { Prefix = "2026/", PageSize = 50 });
 
 while (page.Value.HasMore)
 {
-    page = await storage.ListAsync("reports", new ListOptions { Prefix = "2026/", Cursor = page.Value.Cursor });
+    Render(page.Value.Objects);
+
+    page = await storage.ListAsync(
+        "reports",
+        new ListOptions { Prefix = "2026/", PageSize = 50, Cursor = page.Value.Cursor });
 }
 ```
 
-A listing that does not descend rolls names up the way a folder would, and reports them separately:
+### Walk a whole bucket
 
 ```csharp
-var level = await storage.ListAsync("reports", new ListOptions { IsRecursive = false });
-
-level.Value.Objects;    // top.txt
-level.Value.Prefixes;   // 2026/, 2025/
-```
-
-For walking a whole bucket, use `EnumerateAsync`. Resuming a paged listing from a cursor costs a walk to
-that point — the SDK offers no way to start a listing after a given name, so the server lists from the
-beginning and this skips. Fine for a few pages, wrong for a bucket with a million objects. A walk has
-nowhere to put a result once it has started, so a failure arrives as the last item of the sequence:
-
-```csharp
-await foreach (var item in storage.EnumerateAsync("reports"))
+await foreach (var item in storage.EnumerateAsync("reports", cancellationToken: token))
 {
     if (!item.TryGetValue(out var stored))
     {
         logger.LogWarning("listing stopped: {Error}", item.Error);
+
         break;
     }
 
@@ -156,7 +187,38 @@ await foreach (var item in storage.EnumerateAsync("reports"))
 }
 ```
 
-## Buckets
+Use this rather than paging through a large bucket: resuming from a cursor costs a walk to that point,
+because the SDK offers no way to start a listing after a given name.
+
+### Ask whether something is there
+
+```csharp
+if ((await storage.ExistsAsync("reports", name, token)).Value)
+{
+    // …
+}
+```
+
+A missing object answers `false`. Only a question that could not reach the server is a failure.
+
+### Store and read your own metadata
+
+```csharp
+await storage.PutAsync("reports", content, new UploadOptions
+{
+    Name = "q3.pdf",
+    Metadata = new Dictionary<string, string> { ["author"] = "orldev", ["build"] = "42" }
+});
+
+var stat = await storage.StatAsync("reports", "q3.pdf");
+
+stat.Value.Metadata["author"];   // orldev
+```
+
+Values have to be US-ASCII — that is all a header can carry. Anything else is refused with
+`InvalidArgument` naming the entry, rather than failing later as a transport error.
+
+### Make and remove buckets
 
 ```csharp
 public sealed class Provisioning(IBuckets buckets)
@@ -165,149 +227,169 @@ public sealed class Provisioning(IBuckets buckets)
 }
 ```
 
-`CreateAsync`, `RemoveAsync` and `ExistsAsync`, resolved separately from `IObjectStorage` because buckets
-are made once by whatever provisions the application, while objects are written all day. Creating a bucket
-that already exists succeeds; removing one that still holds objects does not.
+Creating one that exists succeeds. Removing one that still holds objects does not.
 
-## Failures are data
-
-Everything a caller can act on comes back as a result. Exceptions are left for what a caller cannot act on.
+### Talk to two servers
 
 ```csharp
-var read = await storage.GetAsync("reports", "q3.pdf", token);
+builder.Services.AddMinio(builder.Configuration);                  // section "Minio"
+builder.Services.AddKeyedMinio("Archive", builder.Configuration);  // section "Archive"
 
-if (!read.TryGetValue(out var content))
-{
-    return read.Error.Kind switch
-    {
-        StorageErrorKind.ObjectNotFound => Results.NotFound(),
-        StorageErrorKind.AccessDenied => Results.Forbid(),
-        _ => Results.Problem(read.Error.Message)
-    };
-}
-
-await using (content)
-{
-    return Results.Stream(content.Stream, content.Metadata.MediaType);
-}
+public sealed class Reports(
+    IObjectStorage storage,
+    [FromKeyedServices("Archive")] IObjectStorage archive);
 ```
 
-`StorageError` carries the `Kind` to branch on, the `Message`, and — where the server said so — the HTTP
-`StatusCode`, the S3 `Code`, and the `Cause` exception. `Match`, `Map` and `OnFailure` are there for
-composing without unwrapping, each with a pending overload so `await storage.StatAsync(...).MatchAsync(...)`
-reads as one sentence.
+A section named differently from the key is bound explicitly:
 
-A successful result always carries a value: `Success` refuses `null`, so success and "there is something to
-read" are the same fact.
+```csharp
+builder.Services.AddKeyedMinio("Archive", builder.Configuration, sectionName: "Storage:Archive");
+```
 
-The kinds: `Authorization`, `AccessDenied`, `BucketNotFound`, `ObjectNotFound`, `InvalidBucketName`,
-`InvalidObjectName`, `Connection`, `Timeout`, `InvalidArgument`, `NotSupported`, `ObjectDisposed`,
-`Upstream`, `Unexpected`.
+---
 
-Cancellation is the one thing that is not a result. A cancelled token raises `OperationCanceledException`,
+## Handling failures
+
+Every call answers with a result. Read it with `TryGetValue`, `Match`, or by checking `IsSuccess`:
+
+```csharp
+var stored = await storage.PutAsync("reports", content, options, token);
+
+var response = stored.Match(
+    onSuccess: report => Results.Ok(report),
+    onFailure: error => error.Kind switch
+    {
+        StorageErrorKind.BucketNotFound => Results.NotFound(),
+        StorageErrorKind.AccessDenied => Results.Forbid(),
+        StorageErrorKind.InvalidArgument => Results.BadRequest(error.Message),
+        _ => Results.Problem(error.Message)
+    });
+```
+
+`StorageError` carries the `Kind` to branch on, a `Message`, and — where the server said so — the HTTP
+`StatusCode`, the S3 `Code`, the `Cause` exception and the `RetryAfter` it asked for.
+
+| Kind | Means |
+| --- | --- |
+| `ObjectNotFound`, `BucketNotFound` | it is not there |
+| `AccessDenied`, `Authorization` | credentials rejected, or not allowed |
+| `InvalidBucketName`, `InvalidObjectName`, `InvalidArgument` | the request was wrong |
+| `NotSupported` | the operation cannot be done as asked — a stream that cannot seek and states no size |
+| `Connection`, `Timeout` | the server could not be reached, or did not answer in time |
+| `Upstream` | the server failed and said so |
+| `Unexpected` | something else entirely |
+| `ObjectDisposed` | a stream handed in was already closed |
+
+`Match`, `Map` and `OnFailure` compose without unwrapping, each with a pending overload:
+
+```csharp
+var size = await storage.StatAsync("reports", name, token)
+    .MatchAsync(onSuccess: report => report.Size, onFailure: _ => 0L);
+```
+
+Cancellation is the one thing that is not a result: a cancelled token raises `OperationCanceledException`,
 because a caller who cancelled is not asking to be told about it as data.
 
-## Streaming, ranges, and why reads look the way they do
+---
 
-Reads are issued against a URL this library signs with the SDK and then fetches itself. Two reasons, both
-measured rather than assumed:
+## Configuration
 
-- Minio 7.0.0 turns **every** HTTP 206 answer into `PartialContentException` and delivers no bytes at all.
-  Ranged reads through the SDK's read path fail against every server — verified for `WithOffsetAndLength`,
-  `WithLength`, a hand-written `Range` header and the file-based path alike, while the same request without
-  a range succeeds.
-- The SDK's read path hands over a callback rather than a stream, which forces a whole object into memory
-  before a caller sees its first byte.
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `Endpoint` | — | `host` or `host:port`, no scheme. Required |
+| `AccessKey`, `SecretKey` | — | credentials. Required |
+| `IsSecure` | `true` | whether to speak https |
+| `Region`, `SessionToken` | — | for AWS and temporary credentials |
+| `Timeout` | client default | how long one request may take, `"00:00:30"` |
+| `ConnectionLifetime` | `00:05:00` | how long a pooled connection is reused |
+| `MaxConnectionsPerServer` | unbounded | ceiling on simultaneous connections |
+| `RetryAttempts` | `2` | retries for reads and deletes |
+| `RetryDelay` | `00:00:00.200` | first wait; it doubles, capped at 30 s |
+| `CircuitBreakFailures` | `10` | failures in a row before calls stop going out; `0` turns it off |
+| `CircuitBreakDuration` | `00:00:05` | how long they stop |
+| `SignedUrlLifetime` | `00:01:00` | default life of a signed URL |
 
-So `GetAsync` gives you a live stream, and `DownloadRangeToAsync` works:
+Settings are validated when the host starts, not when the first request runs.
 
-```csharp
-await storage.DownloadRangeToAsync("videos", "clip.mp4", response.Body, offset: 1_048_576, length: 65_536);
-```
+---
 
-Offsets are 64-bit. The signed URL never leaves the process and is valid for `SignedUrlLifetime`.
+## What happens without you asking
 
-A read that fails part-way leaves a seekable destination exactly as it was found — a half-written file is
-never left behind for a caller who was told the read failed.
+**Retries.** Reads and deletes are retried when the connection is lost, the request times out, or the
+server answers 408, 429 or 5xx. Uploads are never retried: the stream may already be partly consumed.
+`Retry-After` wins over the schedule, and a server asking for longer than thirty seconds is believed — the
+call returns immediately, carrying the wait it asked for.
 
-## Retries, tracing, logging
+**A circuit breaker.** After `CircuitBreakFailures` such failures in a row, calls stop going out for
+`CircuitBreakDuration`, then one is let through to see whether anything changed. A missing object is not
+counted: that is an answer, not the server's health.
 
-Reads and deletes are retried when the connection is lost, a request times out, or the server answers 408,
-429 or 5xx — `RetryAttempts` times, with a delay that doubles and is capped at thirty seconds. An upload is
-never retried: its stream may already be partly consumed, and replaying it would store the tail of a file as
-the whole of one.
-
-`Retry-After` wins over that schedule. A server that asks for longer than the cap is believed rather than
-argued with: the call comes back immediately, carrying the wait it asked for on `StorageError.RetryAfter`,
-and the caller decides what to do with a server that will not be ready for five minutes.
-
-After `CircuitBreakFailures` such failures in a row, calls stop going out at all for
-`CircuitBreakDuration` — retrying a server that is refusing everything is a share of the load keeping it
-down. Then exactly one call is let through to find out whether anything changed, and a success reopens the
-gate. Failures that say nothing about the server's health, a missing object above all, are not counted.
-Setting `CircuitBreakFailures` to zero turns this off for callers who compose their own resilience.
-
-Every operation opens an activity on the source `Snail.Toolkit.Minio`, tagged with the bucket, the object
-and the configuration, and marked with the error kind when it fails:
+**Tracing and logs.** Every operation opens an activity on the source `Snail.Toolkit.Minio`, tagged with
+the bucket, the object and the configuration:
 
 ```csharp
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddSource(MinioObjectStorage.ActivitySourceName));
 ```
 
-Failures are logged at warning through `ILogger`, retries at debug. No logging configured is fine — the
-adapter falls back to a null logger.
+Real failures log at warning, ordinary ones — a missing object — at debug. No logging configured is fine.
 
-## The vendor layer
+**Streaming reads.** Reads are issued against a URL this library signs and fetches itself, rather than
+through the SDK's read path. Two measured reasons: MinIO's client turns every HTTP 206 answer into an
+exception, so ranged reads are impossible through it, and its read path buffers a whole object before you
+see a byte.
 
-When you need an SDK feature this library does not model, the SDK is still there — through the same
-configuration, the same pools, and with failures still answered as data:
+---
+
+## When you need the SDK
+
+Anything this library does not model is still reachable, over the same configuration and connection pools,
+with failures still answered as data:
 
 ```csharp
-public sealed class Buckets(IMinioClient client)
+public sealed class Tags(IMinioClient client)
 {
     public Task<StorageResult<ObjectStat>> DescribeAsync(string bucket, string name)
         => client.StatObjectAsync(bucket, name);
 }
 ```
 
-`IMinioClients.Create(name)` builds further clients from the same named configuration. Types from the SDK
-appear in these signatures on purpose; `IObjectStorage` is the API that does not.
+`IMinioClients.Create(name)` builds further clients from a named configuration.
 
-**This layer has no retries and no circuit breaker.** They live in the adapter, so a call made here — or on
-an `IMinioClient` resolved from the container — goes to the server once. Code that wants the resilience
-takes `IObjectStorage`.
+**This layer has no retries and no circuit breaker** — they live in the adapter. A call made here goes to
+the server once. Code that wants the resilience takes `IObjectStorage`.
 
-## Coming from an earlier version
+---
 
-The 1.x surface is gone. What it did and where it went:
+## Coming from 1.x
 
 | Was | Now |
 | --- | --- |
 | `client.PutStreamAsync(bucket, stream, contentType, name)` | `storage.PutAsync(bucket, stream, new UploadOptions { … })` |
 | `client.DownloadObjectAsync(bucket, name)` → `MemoryStream` | `storage.GetAsync(bucket, name)` — streams, never buffers |
 | `client.DownloadObjectWithOffsetAndLengthAsync(…)` | `storage.DownloadRangeToAsync(…)` — and it works |
+| listing through the SDK | `storage.ListAsync(…)` / `storage.EnumerateAsync(…)` |
+| `client.MakeBucketAsync(…)` | `buckets.CreateAsync(…)` |
 | `MinioResult<T>` / `MinioErrorType` | `StorageResult<T>` / `StorageErrorKind` |
 | `IMinioClientFactory.CreateClient(name)` | `IMinioClients.Create(name)` (the SDK owns the old name) |
-| `AddMinio(name, configuration)` for a second server | `AddKeyedMinio(name, configuration)` — the old one silently kept the first |
+| `AddMinio(name, configuration)` for a second server | `AddKeyedMinio(name, configuration)` |
 | `AddMinio(…, lifetime: …)` | gone; storage is a singleton |
-| listing objects through the SDK | `ListAsync` / `EnumerateAsync` on the port |
-| `IMinioClient.MakeBucketAsync(…)` | `IBuckets.CreateAsync(…)` |
 | `"SSL": true` | `"IsSecure": true` |
 | `"Timeout": 2000` | `"Timeout": "00:00:02"` |
 
+---
+
 ## Running the tests
 
-The suite runs against a real Minio server in Docker through Testcontainers, because a stubbed transport can
-only confirm the behaviour it was written to imitate.
+The suite runs against a real MinIO server in Docker through Testcontainers, because a stubbed transport
+can only confirm the behaviour it was written to imitate.
 
 ```bash
 dotnet test
 ```
 
-Docker has to be running. Everything else — the container, the buckets, the cleanup — takes care of itself.
+Docker has to be running. The container, the buckets and the cleanup take care of themselves.
 
 ## License
 
-Snail.Toolkit.Minio is a free and open source project, released under the permissible
-[MIT license](LICENSE).
+Released under the [MIT license](LICENSE).
