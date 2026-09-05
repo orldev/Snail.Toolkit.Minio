@@ -1,8 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Toolkit.Minio", "src\Toolkit.Minio.csproj", "{FD0BEA94-2883-4EAA-A5A6-76BB5BB34BB2}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Snail.Toolkit.Minio", "src\Snail.Toolkit.Minio.csproj", "{FD0BEA94-2883-4EAA-A5A6-76BB5BB34BB2}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Toolkit.Minio.Tests", "tests\Toolkit.Minio.Tests.csproj", "{00C4EF56-33CA-4788-B143-6F6C2C276AF6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Snail.Toolkit.Minio.Tests", "tests\Snail.Toolkit.Minio.Tests.csproj", "{00C4EF56-33CA-4788-B143-6F6C2C276AF6}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

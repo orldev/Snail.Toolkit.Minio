@@ -1,16 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+        <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <PackageId>Snail.Toolkit.Minio</PackageId>
         <PackageTags>Minio</PackageTags>
-        <Title>Toolkit.Minio</Title>
+        <Title>Snail.Toolkit.Minio</Title>
         <Authors>Toolkit</Authors>
-        <Description>Extension for the framework Minio</Description>
+        <Description>Object storage for .NET over Minio and S3: a vendor-neutral port, streaming and ranged reads, failures as data.</Description>
         <RepositoryUrl>https://github.com/orldev/Snail.Toolkit.Minio</RepositoryUrl>
         <Copyright>Toolkit, 2023</Copyright>
         <PackageProjectUrl>https://github.com/orldev/Snail.Toolkit.Minio</PackageProjectUrl>
@@ -25,12 +25,14 @@
 
     <ItemGroup>
         <None Include="..\README.md" Pack="true" PackagePath="\"/>
+        <InternalsVisibleTo Include="Snail.Toolkit.Minio.Tests"/>
     </ItemGroup>
 
     <ItemGroup>
         <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
         <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
         <PackageReference Include="Minio" Version="7.0.0" />
     </ItemGroup>
 </Project>

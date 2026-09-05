@@ -1,226 +1,232 @@
-# Minio
+# Snail.Toolkit.Minio
 
-Extension for the framework `Minio` - because why use simple storage when you can have complicated dependency injection with **actual error handling**?
+Object storage for .NET over Minio and any other S3-compatible server. The API you code against names no
+vendor type, failures come back as data, objects stream instead of being buffered, and ranged reads work —
+which, as it turns out, is not a given.
 
-## Connecting the configuration (pick your poison)
+```bash
+dotnet add package Snail.Toolkit.Minio
+```
 
-```c# 
-// Option 1: The basic "I hope this works" approach
+Targets `net8.0`, `net9.0` and `net10.0`.
+
+## Registration
+
+```csharp
 builder.Services.AddMinio(builder.Configuration);
 ```
 
-```c# 
-// Option 2: The "I have multiple storage accounts and I like pain" approach
-builder.Services.AddMinio("Minio1", builder.Configuration);
+That reads the `Minio` section and registers `IObjectStorage`. A second server gets a key of its own:
+
+```csharp
+builder.Services.AddMinio(builder.Configuration);
+builder.Services.AddKeyedMinio("Archive", builder.Configuration);
+
+public sealed class Reports(
+    IObjectStorage storage,
+    [FromKeyedServices("Archive")] IObjectStorage archive);
 ```
 
-```c# 
-// Option 3: The "I read the documentation (unlike you)" approach
-builder.Services.AddMinio(builder.Configuration, client => client
-    .WithProxy(new WebProxy("http://proxy:8080"))   // Because corporate firewalls are fun!
-    .WithRetryPolicy(retryHandler)                  // For when hope is not a strategy
-    .WithTimeout(30_000));                          // Patience, but bounded
+A section named something other than the key is bound explicitly:
+
+```csharp
+builder.Services.AddKeyedMinio("Archive", builder.Configuration, sectionName: "Storage:Archive");
 ```
 
-> Only the **first** `AddMinio` call registers the injectable `IMinioClient`. Register as many named
-> configurations as you like, then reach the extra ones through
-> `IMinioClientFactory.CreateClient("Name")` — a second `AddMinio` will not replace the first client
-> (nor its lifetime).
+Anything the SDK client needs beyond configuration is applied last, overriding what configuration set:
 
-## Sample configuration appsettings.json for using Minio
+```csharp
+builder.Services.AddMinio(
+    builder.Configuration,
+    configureClient: client => client.WithProxy(new WebProxy("http://proxy:8080")));
+```
 
-The section name matches the name you pass to `AddMinio`, and defaults to `Minio`.
+Everything is registered as a singleton. A storage client owns connections and is safe to share; there is
+no lifetime knob, because a per-request one leaves the container holding every client it ever built.
+
+## Configuration
 
 ```json
 {
   "Minio": {
-    "Endpoint": "play.min.io",      // required — where your data goes to hide
-    "AccessKey": "accessKey",       // required — the key you'll inevitably commit to GitHub
-    "SecretKey": "secretKey",       // required — the secret you'll rotate every 90 days (or not)
-    "Region": "region",             // - optional (like most meetings)
-    "SessionToken": "sessionToken", // - optional (temporary, like your motivation)
-    "Timeout": 2000,                // - optional (how long to wait before giving up)
-    "SSL": true                     // - optional, defaults to true (keep it that way)
+    "Endpoint": "play.min.io",
+    "AccessKey": "accessKey",
+    "SecretKey": "secretKey",
+    "Region": "us-east-1",
+    "SessionToken": "sessionToken",
+    "IsSecure": true,
+    "Timeout": "00:00:30",
+    "ConnectionLifetime": "00:05:00",
+    "MaxConnectionsPerServer": 64,
+    "RetryAttempts": 2,
+    "RetryDelay": "00:00:00.200",
+    "SignedUrlLifetime": "00:01:00"
   }
 }
 ```
 
-`Endpoint`, `AccessKey`, and `SecretKey` are required: the underlying Minio client refuses anonymous
-access, so a missing value fails fast with a message naming the offending configuration section.
+`Endpoint`, `AccessKey` and `SecretKey` are required. Everything else has a working default.
 
-## Actually Useful Error Handling!
+Settings are validated when the host starts, not when the first request runs. A missing section, an
+endpoint carrying a scheme, a zero timeout, a negative retry count — each stops the application with a
+message naming the setting, instead of surfacing later as a storage failure that blames the network.
 
-Tired of exceptions crashing your party? Meet `MinioResult` - because sometimes failure is an option!
+## Reading and writing
 
-### Civilized Error Handling
 ```csharp
-// Upload files like a pro
-var result = await minioClient.PutStreamAsync("bucket", stream, "image/png", "object");
-result.Match(
-    onSuccess: response => Console.WriteLine($"Uploaded! ETag: {response.Etag}"),
-    onFailure: (errorType, message) => Console.WriteLine($"Failed with {errorType}: {message}")
-);
-
-// Download without the drama — the stream comes back rewound and ready to read
-var downloadResult = await minioClient.DownloadObjectAsync("bucket", "object");
-if (downloadResult.TryGetValue(out var stream))
+public sealed class Reports(IObjectStorage storage)
 {
-    using (stream)
+    public async Task<string?> SaveAsync(Stream file, string name, CancellationToken token)
     {
-        // Do something amazing with your stream
-    }
-}
-else if (downloadResult.ErrorType == MinioErrorType.ObjectNotFound)
-{
-    Console.WriteLine("The object is on a coffee break");
-}
+        var stored = await storage.PutAsync(
+            "reports",
+            file,
+            new UploadOptions { Name = name, MediaType = "application/pdf" },
+            token);
 
-// Remove objects safely
-var removeResult = await minioClient.RemoveObjectAsync("bucket", "object");
-if (!removeResult.IsSuccess)
-{
-    _logger.LogWarning("Delete failed, but at least we didn't crash!");
-}
-```
-
-### Advanced Error Handling (For Overachievers):
-```csharp
-// Pattern matching FTW!
-var result = await minioClient.StatObjectAsync("bucket", "object")
-    .Match(
-        onSuccess: stat => new { Exists = true, Size = stat.Size },
-        onFailure: (errorType, message) => new { Exists = false, Error = errorType }
-    );
-
-// Functional programming magic
-var fileInfo = await minioClient.GetObjectAsync("bucket", "file.txt")
-    .Match(
-        onSuccess: objectStat => $"File size: {objectStat.Size} bytes",
-        onFailure: (errorType, message) => $"Error: {errorType}"
-    );
-
-// Chain operations like a boss
-var operation = await minioClient.PutStreamAsync("bucket", stream, "text/plain", "object")
-    .Match(
-        onSuccess: _ => "Upload successful",
-        onFailure: (errorType, _) => errorType switch
-        {
-            MinioErrorType.Authorization => "Check your credentials",
-            MinioErrorType.BucketNotFound => "Bucket doesn't exist",
-            MinioErrorType.Connection => "Network issues",
-            _ => "Something went wrong"
-        }
-    );
-
-// Reshape without unwrapping — failures pass straight through
-var sizes = await minioClient.StatObjectAsync("bucket", "object")
-    .Map(stat => stat.Size);
-
-// Log a failure and keep the result
-var stat = (await minioClient.StatObjectAsync("bucket", "object"))
-    .OnFailure((errorType, message) => _logger.LogWarning("Stat failed: {Type} {Message}", errorType, message));
-```
-
-### Available Operations (That Actually Return Useful Results):
-
-| Operation | Returns | When to Use |
-|-----------|---------|-------------|
-| `PutObjectAsync` | `MinioResult<PutObjectResponse>` | Uploading files with proper error info |
-| `PutStreamAsync` | `MinioResult<PutObjectResponse>` | Streaming uploads with auto-naming |
-| `GetObjectAsync` | `MinioResult<ObjectStat>` | Getting object metadata + data |
-| `DownloadObjectAsync` | `MinioResult<Stream>` | Downloading to MemoryStream |
-| `DownloadObjectAsync` (with stream) | `MinioResult<ObjectStat>` | Downloading to existing stream |
-| `DownloadObjectWithOffsetAndLengthAsync` | `MinioResult<ObjectStat>` | Ranged reads (64-bit offsets) |
-| `RemoveObjectAsync` | `MinioResult` | Deleting objects (no return data) |
-| `StatObjectAsync` | `MinioResult<ObjectStat>` | Checking if object exists |
-
-### A Few Things Worth Knowing
-
-- **Cancellation is not an error.** Cancel the token and you get an `OperationCanceledException`, not a
-  `MinioResult` claiming `UnexpectedError`. Everything else comes back as a result.
-- **Uploading a non-seekable stream?** Pass `objectSize:` explicitly — an HTTP request body has no `Length`.
-- **`appendExtension:` is opt-in** and never doubles an extension you already wrote: `report.txt` stays
-  `report.txt`.
-- **Clients are meant to be long-lived.** Resolve one per configuration at startup. If you do create them
-  repeatedly, the factory shares a connection pool so you won't run out of sockets — unless you supply your
-  own `HttpClient` or proxy, in which case your transport is left strictly alone.
-
-### Error Types You Can Actually Handle:
-
-- `Authorization` - Your credentials are lying to you
-- `BucketNotFound` - The bucket is in another castle
-- `ObjectNotFound` - The object joined the witness protection program
-- `Connection` - The server is ignoring your calls
-- `Timeout` - The server is taking a nap
-- `InvalidBucketName` - You used emojis in the bucket name, didn't you?
-- ...and many more!
-
-## What Could Possibly Go Wrong? (Spoiler: Everything, but now you can handle it!)
-
-```csharp
-var result = await minioClient.SomeOperation();
-if (!result.IsSuccess)
-{
-    switch (result.ErrorType)
-    {
-        case MinioErrorType.Authorization:
-            await _authService.RefreshToken();
-            break;
-        case MinioErrorType.BucketNotFound:
-            await _notificationService.AlertMissingBucket();
-            break;
-        case MinioErrorType.Connection:
-            await _retryService.RetryWithBackoff();
-            break;
-        default:
-            _logger.LogError("Specific error: {ErrorType}", result.ErrorType);
-            break;
+        return stored.Match(
+            onSuccess: report => report.Name,
+            onFailure: error => null);
     }
 }
 ```
 
-## Documentation (That You Might Actually Read Now)
+The whole contract:
 
-- [.NET Client API Reference](https://min.io/docs/minio/linux/developers/dotnet/API.html) - The manual you'll open before everything breaks
-- [.NET Quickstart Guide](https://min.io/docs/minio/linux/developers/dotnet/minio-dotnet.html) - "Quick" being slightly less relative now
+| Call | Answers |
+| --- | --- |
+| `PutAsync(bucket, content, options, ct)` | `StoredObject` — what was stored |
+| `GetAsync(bucket, name, ct)` | `ObjectContent` — metadata plus a live stream you own |
+| `DownloadToAsync(bucket, name, destination, ct)` | `StoredObject`, having copied the bytes |
+| `DownloadRangeToAsync(bucket, name, destination, offset, length, ct)` | `StoredObject`, having copied the range |
+| `StatAsync(bucket, name, ct)` | `StoredObject`, without reading the bytes |
+| `RemoveAsync(bucket, name, ct)` | success, or why not |
 
-## Source Code (For the Brave & Curious)
+`UploadOptions` decides the rest: `Name` (generated when omitted), `MediaType` (derived from the name when
+omitted), `Size` (required only for a stream that cannot seek), `AppendExtension`, and `Metadata`.
 
-- [The original source](https://github.com/appany/Minio.AspNetCore/tree/main) - Where the magic (and hopefully fewer bugs) happen
-- [MimeTypeMap](https://github.com/samuelneff/MimeTypeMap) - Because guessing file types is still hard.
-  Vendored as an **internal** type, so it won't collide with the `MimeTypes` package in your own project.
+## Failures are data
 
-## Running the Tests
+Everything a caller can act on comes back as a result. Exceptions are left for what a caller cannot act on.
+
+```csharp
+var read = await storage.GetAsync("reports", "q3.pdf", token);
+
+if (!read.TryGetValue(out var content))
+{
+    return read.Error.Kind switch
+    {
+        StorageErrorKind.ObjectNotFound => Results.NotFound(),
+        StorageErrorKind.AccessDenied => Results.Forbid(),
+        _ => Results.Problem(read.Error.Message)
+    };
+}
+
+await using (content)
+{
+    return Results.Stream(content.Stream, content.Metadata.MediaType);
+}
+```
+
+`StorageError` carries the `Kind` to branch on, the `Message`, and — where the server said so — the HTTP
+`StatusCode`, the S3 `Code`, and the `Cause` exception. `Match`, `Map` and `OnFailure` are there for
+composing without unwrapping, each with a pending overload so `await storage.StatAsync(...).MatchAsync(...)`
+reads as one sentence.
+
+A successful result always carries a value: `Success` refuses `null`, so success and "there is something to
+read" are the same fact.
+
+The kinds: `Authorization`, `AccessDenied`, `BucketNotFound`, `ObjectNotFound`, `InvalidBucketName`,
+`InvalidObjectName`, `Connection`, `Timeout`, `InvalidArgument`, `NotSupported`, `ObjectDisposed`,
+`Upstream`, `Unexpected`.
+
+Cancellation is the one thing that is not a result. A cancelled token raises `OperationCanceledException`,
+because a caller who cancelled is not asking to be told about it as data.
+
+## Streaming, ranges, and why reads look the way they do
+
+Reads are issued against a URL this library signs with the SDK and then fetches itself. Two reasons, both
+measured rather than assumed:
+
+- Minio 7.0.0 turns **every** HTTP 206 answer into `PartialContentException` and delivers no bytes at all.
+  Ranged reads through the SDK's read path fail against every server — verified for `WithOffsetAndLength`,
+  `WithLength`, a hand-written `Range` header and the file-based path alike, while the same request without
+  a range succeeds.
+- The SDK's read path hands over a callback rather than a stream, which forces a whole object into memory
+  before a caller sees its first byte.
+
+So `GetAsync` gives you a live stream, and `DownloadRangeToAsync` works:
+
+```csharp
+await storage.DownloadRangeToAsync("videos", "clip.mp4", response.Body, offset: 1_048_576, length: 65_536);
+```
+
+Offsets are 64-bit. The signed URL never leaves the process and is valid for `SignedUrlLifetime`.
+
+A read that fails part-way leaves a seekable destination exactly as it was found — a half-written file is
+never left behind for a caller who was told the read failed.
+
+## Retries, tracing, logging
+
+Reads and deletes are retried when the connection is lost or a request times out, `RetryAttempts` times,
+with a delay that doubles. An upload is never retried: its stream may already be partly consumed, and
+replaying it would store the tail of a file as the whole of one.
+
+Every operation opens an activity on the source `Snail.Toolkit.Minio`, tagged with the bucket, the object
+and the configuration, and marked with the error kind when it fails:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing.AddSource(MinioObjectStorage.ActivitySourceName));
+```
+
+Failures are logged at warning through `ILogger`, retries at debug. No logging configured is fine — the
+adapter falls back to a null logger.
+
+## The vendor layer
+
+When you need an SDK feature this library does not model, the SDK is still there — through the same
+configuration, the same pools, and with failures still answered as data:
+
+```csharp
+public sealed class Buckets(IMinioClient client)
+{
+    public Task<StorageResult<ObjectStat>> DescribeAsync(string bucket, string name)
+        => client.StatObjectAsync(bucket, name);
+}
+```
+
+`IMinioClients.Create(name)` builds further clients from the same named configuration. Types from the SDK
+appear in these signatures on purpose; `IObjectStorage` is the API that does not.
+
+## Coming from an earlier version
+
+The 1.x surface is gone. What it did and where it went:
+
+| Was | Now |
+| --- | --- |
+| `client.PutStreamAsync(bucket, stream, contentType, name)` | `storage.PutAsync(bucket, stream, new UploadOptions { … })` |
+| `client.DownloadObjectAsync(bucket, name)` → `MemoryStream` | `storage.GetAsync(bucket, name)` — streams, never buffers |
+| `client.DownloadObjectWithOffsetAndLengthAsync(…)` | `storage.DownloadRangeToAsync(…)` — and it works |
+| `MinioResult<T>` / `MinioErrorType` | `StorageResult<T>` / `StorageErrorKind` |
+| `IMinioClientFactory.CreateClient(name)` | `IMinioClients.Create(name)` (the SDK owns the old name) |
+| `AddMinio(name, configuration)` for a second server | `AddKeyedMinio(name, configuration)` — the old one silently kept the first |
+| `AddMinio(…, lifetime: …)` | gone; storage is a singleton |
+| `"SSL": true` | `"IsSecure": true` |
+| `"Timeout": 2000` | `"Timeout": "00:00:02"` |
+
+## Running the tests
+
+The suite runs against a real Minio server in Docker through Testcontainers, because a stubbed transport can
+only confirm the behaviour it was written to imitate.
 
 ```bash
 dotnet test
 ```
 
-One command, no flags, no setup beyond a running Docker daemon.
-
-Almost everything runs against a **real Minio server**, started and disposed by
-[Testcontainers](https://dotnet.testcontainers.org/). Uploads are verified by reading the object back rather
-than by inspecting the request that was sent, so a test passes only when the bytes really round-trip. Failure
-modes are provoked for real too: a missing bucket, rejected credentials, a refused connection, an expired
-request timeout. The whole suite finishes in a few seconds.
-
-Exactly one assertion uses a stubbed transport, because no server can supply it: that a 64-bit range offset
-survives into the `Range` header.
-
-That split is not academic. While the tests were stubbed, `Connection` and `Timeout` failures were silently
-reported as `UnexpectedError` — simulated responses could not reveal it, and a real socket did so immediately.
-
-## Known limitation: ranged reads
-
-`DownloadObjectWithOffsetAndLengthAsync` cannot succeed with the Minio **client** 7.0.0 (the current release),
-which turns every HTTP 206 response into a `PartialContentException`. This is upstream, not in this wrapper —
-the raw Minio client fails the same way for `WithOffsetAndLength`, `WithLength`, a hand-written `Range`
-header, and the file-based download path, while the identical request without a range succeeds.
-
-Upgrading the **server** does not help: the failure reproduces identically against server releases
-`2023-01-31` and `2025-09-07`. The fix has to come from a new client release. The method and its end-to-end
-test are kept in place (the test is skipped with this reason) so both light up when one ships.
+Docker has to be running. Everything else — the container, the buckets, the cleanup — takes care of itself.
 
 ## License
 
-Snail.Toolkit.Minio is a free and open source project, released under the permissible [MIT license](LICENSE).
+Snail.Toolkit.Minio is a free and open source project, released under the permissible
+[MIT license](LICENSE).

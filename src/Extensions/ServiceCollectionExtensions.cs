@@ -1,158 +1,117 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Toolkit.Minio.Entities;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Snail.Toolkit.Minio.Adapters;
+using Snail.Toolkit.Minio.Ports;
 
-namespace Toolkit.Minio.Extensions;
+namespace Snail.Toolkit.Minio.Extensions;
 
 /// <summary>
-/// Provides extension methods for <see cref="IServiceCollection"/> to configure Minio client dependency injection.
-/// These extensions simplify the process of registering Minio clients with the .NET dependency injection container.
+/// Registers object storage with the dependency injection container.
 /// </summary>
+/// <remarks>
+/// <para>
+/// One server is registered with <see cref="AddMinio"/> and resolved as
+/// <see cref="IObjectStorage"/>. Further servers are registered with <see cref="AddKeyedMinio"/> and
+/// resolved by their key, because a container holds one unkeyed registration per service type and a second
+/// unkeyed <c>AddMinio</c> would silently be ignored.
+/// </para>
+/// <para>
+/// Everything is a singleton. A storage client owns connections and is safe to share, while a per-request
+/// one would leave the container holding every client it ever built until the application stopped.
+/// </para>
+/// </remarks>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds Minio client services to the specified <see cref="IServiceCollection"/> using configuration from appsettings.json
-    /// and allows for additional client configuration.
+    /// Registers the default server, read from the <c>Minio</c> configuration section.
     /// </summary>
-    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
-    /// <param name="configuration">The configuration instance containing Minio settings.</param>
-    /// <param name="configureClient">An optional delegate for additional client configuration.</param>
-    /// <param name="lifetime">The service lifetime for the Minio client. Defaults to <see cref="ServiceLifetime.Singleton"/>.</param>
-    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
-    /// <remarks>
-    /// <para>
-    /// This method registers Minio services with the default configuration section name "Minio".
-    /// It expects configuration to be available under the "Minio" section in the provided <paramref name="configuration"/>.
-    /// </para>
-    /// <para>
-    /// The method registers the following services:
-    /// <list type="bullet">
-    /// <item><description><see cref="IMinioClientFactory"/> as singleton</description></item>
-    /// <item><description><see cref="IMinioClient"/> with the specified lifetime</description></item>
-    /// <item><description>Configuration options for <see cref="MinioOptions"/></description></item>
-    /// </list>
-    /// </para>
-    /// </remarks>
+    /// <param name="services">The container to add to.</param>
+    /// <param name="configuration">The configuration to bind from.</param>
+    /// <param name="sectionName">The section to bind, when it is not named <c>Minio</c>.</param>
+    /// <param name="configureClient">Applied last to the SDK client, overriding what configuration set.</param>
+    /// <returns>The same container, so calls can be chained.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configuration"/> is null.</exception>
     /// <example>
-    /// The following example shows how to use this method in Startup.cs or Program.cs:
     /// <code>
-    /// // Using default configuration section "Minio"
-    /// services.AddMinio(Configuration);
-    /// 
-    /// // With additional client configuration
-    /// services.AddMinio(Configuration, client => 
-    /// {
-    ///     client.WithProxy("http://proxy:8080");
-    /// });
+    /// services.AddMinio(builder.Configuration);
+    ///
+    /// var stored = await storage.PutAsync("reports", file.OpenReadStream());
     /// </code>
     /// </example>
     public static IServiceCollection AddMinio(
-        this IServiceCollection services, 
-        IConfiguration configuration, 
-        Action<IMinioClient>? configureClient = null,
-        ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        this IServiceCollection services,
+        IConfiguration configuration,
+        string sectionName = MinioOptions.SectionName,
+        Action<IMinioClient>? configureClient = null)
     {
-        const string defaultName = "Minio";
-        return services.AddMinio(defaultName, configuration, configureClient, lifetime);
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sectionName);
+
+        services.AddKeyedMinio(MinioOptions.SectionName, configuration, sectionName, configureClient);
+
+        services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IMinioClient>(MinioOptions.SectionName));
+        services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IObjectStorage>(MinioOptions.SectionName));
+
+        return services;
     }
 
     /// <summary>
-    /// Adds a named Minio client to the specified <see cref="IServiceCollection"/> with configuration from the specified section.
+    /// Registers a further server under a key of its own.
     /// </summary>
-    /// <param name="services">The <see cref="IServiceCollection"/> to add services to.</param>
-    /// <param name="name">The name of the Minio client configuration. This should match the configuration section name.</param>
-    /// <param name="configuration">The configuration instance containing Minio settings.</param>
-    /// <param name="configureClient">An optional delegate for additional client configuration.</param>
-    /// <param name="lifetime">The service lifetime for the Minio client. Defaults to <see cref="ServiceLifetime.Singleton"/>.</param>
-    /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
-    /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="services"/> or <paramref name="configuration"/> is null.
-    /// </exception>
-    /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="name"/> is null, empty, or whitespace.
-    /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="lifetime"/> is not a valid <see cref="ServiceLifetime"/> value.
-    /// </exception>
-    /// <remarks>
-    /// <para>
-    /// This method allows for multiple named Minio client configurations within the same application.
-    /// Each named client can have different endpoints, credentials, and settings.
-    /// </para>
-    /// <para>
-    /// The configuration is expected to be available under the section named by <paramref name="name"/>
-    /// in the provided <paramref name="configuration"/>.
-    /// </para>
-    /// <para>
-    /// The service registration includes:
-    /// <list type="bullet">
-    /// <item><description>Named options configuration for <see cref="MinioOptions"/></description></item>
-    /// <item><description><see cref="IMinioClientFactory"/> as singleton</description></item>
-    /// <item><description><see cref="IMinioClient"/> with the specified lifetime</description></item>
-    /// </list>
-    /// </para>
-    /// <para>
-    /// When resolving <see cref="IMinioClient"/> from the dependency injection container,
-    /// the client will be configured with both the named options and any additional configuration
-    /// provided via the <paramref name="configureClient"/> delegate.
-    /// </para>
-    /// <para>
-    /// <b>Only the first call wins for the unnamed <see cref="IMinioClient"/> registration.</b> Named options
-    /// accumulate across calls, but <see cref="IMinioClient"/> is registered with <c>TryAdd</c>, which matches on
-    /// service type alone. A second <c>AddMinio</c> therefore leaves both the client and the <paramref name="lifetime"/>
-    /// of the first call in place. Resolve additional configurations through
-    /// <see cref="IMinioClientFactory.CreateClient"/> rather than expecting a second <see cref="IMinioClient"/>.
-    /// </para>
-    /// </remarks>
+    /// <param name="services">The container to add to.</param>
+    /// <param name="name">The key, which is also the name of the options instance.</param>
+    /// <param name="configuration">The configuration to bind from.</param>
+    /// <param name="sectionName">The section to bind, when it is not named after the key.</param>
+    /// <param name="configureClient">Applied last to the SDK client, overriding what configuration set.</param>
+    /// <returns>The same container, so calls can be chained.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="services"/> or <paramref name="configuration"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is blank.</exception>
     /// <example>
-    /// The following example shows how to register multiple named Minio clients:
     /// <code>
-    /// // Register primary Minio client
-    /// services.AddMinio("PrimaryMinio", Configuration, client => 
-    /// {
-    ///     client.WithTimeout(30000);
-    /// });
-    /// 
-    /// // Register secondary Minio client with different configuration
-    /// services.AddMinio("SecondaryMinio", Configuration, lifetime: ServiceLifetime.Scoped);
-    /// 
-    /// // Later, resolve using the factory
-    /// var factory = serviceProvider.GetRequiredService&lt;IMinioClientFactory&gt;();
-    /// var primaryClient = factory.CreateClient("PrimaryMinio");
-    /// var secondaryClient = factory.CreateClient("SecondaryMinio");
+    /// services.AddKeyedMinio("archive", builder.Configuration);
+    ///
+    /// public sealed class Reports([FromKeyedServices("archive")] IObjectStorage archive);
     /// </code>
     /// </example>
-    public static IServiceCollection AddMinio(
-        this IServiceCollection services, 
-        string name, 
+    public static IServiceCollection AddKeyedMinio(
+        this IServiceCollection services,
+        string name,
         IConfiguration configuration,
-        Action<IMinioClient>? configureClient = null,
-        ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        string? sectionName = null,
+        Action<IMinioClient>? configureClient = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        services.Configure<MinioOptions>(name, configuration.GetSection(name));
-        services.TryAddSingleton<IMinioClientFactory, MinioClientFactory>();
-        switch (lifetime)
-        {
-            case ServiceLifetime.Singleton:
-                services.TryAddSingleton(ImplementationFactory);
-                break;
-            case ServiceLifetime.Scoped:
-                services.TryAddScoped(ImplementationFactory);
-                break;
-            case ServiceLifetime.Transient:
-                services.TryAddTransient(ImplementationFactory);
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(lifetime), lifetime, null);
-        }
-        return services;
+        services.AddOptions<MinioOptions>(name)
+            .Bind(configuration.GetSection(sectionName ?? name))
+            .ValidateOnStart();
 
-        IMinioClient ImplementationFactory(IServiceProvider sp) => sp
-            .GetRequiredService<IMinioClientFactory>().CreateClient(name, configureClient);
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IValidateOptions<MinioOptions>, MinioOptionsValidator>());
+
+        services.TryAddSingleton<MinioTransport>();
+        services.TryAddSingleton<IMinioClients, MinioClients>();
+
+        services.TryAddKeyedSingleton<IMinioClient>(
+            name,
+            (provider, _) => provider.GetRequiredService<IMinioClients>().Create(name, configureClient));
+
+        services.TryAddKeyedSingleton<IObjectStorage>(
+            name,
+            (provider, _) => new MinioObjectStorage(
+                name,
+                provider.GetRequiredKeyedService<IMinioClient>(name),
+                provider.GetRequiredService<MinioTransport>().CreateClient(name),
+                provider.GetRequiredService<IOptionsMonitor<MinioOptions>>(),
+                provider.GetService<ILogger<MinioObjectStorage>>() ?? NullLogger<MinioObjectStorage>.Instance));
+
+        return services;
     }
 }

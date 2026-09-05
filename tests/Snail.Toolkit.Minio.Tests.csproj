@@ -24,7 +24,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\src\Toolkit.Minio.csproj" />
+      <ProjectReference Include="..\src\Snail.Toolkit.Minio.csproj" />
     </ItemGroup>
 
 </Project>
