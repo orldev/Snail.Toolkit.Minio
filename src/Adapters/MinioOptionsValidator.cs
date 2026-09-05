@@ -64,12 +64,21 @@ internal sealed class MinioOptionsValidator : IValidateOptions<MinioOptions>
         if (options.MaxConnectionsPerServer is { } ceiling && ceiling <= 0)
             return $"'{name}:{nameof(MinioOptions.MaxConnectionsPerServer)}' has to be positive, not {ceiling}.";
 
-        if (options.RetryAttempts < 0)
-            return $"'{name}:{nameof(MinioOptions.RetryAttempts)}' cannot be negative, "
+        if (options.RetryAttempts is < 0 or > 100)
+            return $"'{name}:{nameof(MinioOptions.RetryAttempts)}' has to be between 0 and 100, "
                 + $"not {options.RetryAttempts}.";
 
-        if (options.RetryDelay < TimeSpan.Zero)
-            return $"'{name}:{nameof(MinioOptions.RetryDelay)}' cannot be negative, not '{options.RetryDelay}'.";
+        if (options.RetryDelay < TimeSpan.Zero || options.RetryDelay > TimeSpan.FromMinutes(1))
+            return $"'{name}:{nameof(MinioOptions.RetryDelay)}' has to be between nothing and a minute, "
+                + $"not '{options.RetryDelay}'; it doubles per attempt.";
+
+        if (options.CircuitBreakFailures < 0)
+            return $"'{name}:{nameof(MinioOptions.CircuitBreakFailures)}' cannot be negative, "
+                + $"not {options.CircuitBreakFailures}; zero turns the circuit breaker off.";
+
+        if (options.CircuitBreakDuration <= TimeSpan.Zero)
+            return $"'{name}:{nameof(MinioOptions.CircuitBreakDuration)}' has to be positive, "
+                + $"not '{options.CircuitBreakDuration}'.";
 
         if (options.SignedUrlLifetime < TimeSpan.FromSeconds(1) || options.SignedUrlLifetime > TimeSpan.FromDays(7))
             return $"'{name}:{nameof(MinioOptions.SignedUrlLifetime)}' has to be between one second and "

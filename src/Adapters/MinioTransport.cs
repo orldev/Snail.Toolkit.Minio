@@ -23,8 +23,9 @@ namespace Snail.Toolkit.Minio.Adapters;
 /// </remarks>
 public class MinioTransport : IDisposable
 {
-    private readonly ConcurrentDictionary<string, SocketsHttpHandler> _handlers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<SocketsHttpHandler>> _handlers = new(StringComparer.Ordinal);
     private readonly IOptionsMonitor<MinioOptions>? _options;
+    private readonly object _gate = new();
 
     private bool _disposed;
 
@@ -63,29 +64,51 @@ public class MinioTransport : IDisposable
     public virtual HttpClient CreateClient(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return new HttpClient(_handlers.GetOrAdd(name, Pool), disposeHandler: false)
+        lock (_gate)
         {
-            Timeout = System.Threading.Timeout.InfiniteTimeSpan
-        };
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            return new HttpClient(_handlers.GetOrAdd(name, Deferred).Value, disposeHandler: false)
+            {
+                Timeout = System.Threading.Timeout.InfiniteTimeSpan
+            };
+        }
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Under the same lock as <see cref="CreateClient"/>: a pool opened by a call racing this one would
+    /// otherwise be added after the sweep and never closed.
+    /// </remarks>
     public virtual void Dispose()
     {
-        if (_disposed)
-            return;
-
-        _disposed = true;
-
-        foreach (var handler in _handlers.Values)
+        lock (_gate)
         {
-            handler.Dispose();
-        }
+            if (_disposed)
+                return;
 
-        _handlers.Clear();
+            _disposed = true;
+
+            foreach (var handler in _handlers.Values.Where(pool => pool.IsValueCreated))
+            {
+                handler.Value.Dispose();
+            }
+
+            _handlers.Clear();
+        }
     }
+
+    /// <summary>
+    /// Defers building the pool for one named configuration until it is first asked for.
+    /// </summary>
+    /// <param name="name">The configuration to read.</param>
+    /// <returns>A pool that is built once, however many threads ask at the same time.</returns>
+    /// <remarks>
+    /// The factory a concurrent dictionary is given may run more than once, and every extra run here would
+    /// open a connection pool that nothing ever disposes.
+    /// </remarks>
+    private Lazy<SocketsHttpHandler> Deferred(string name) => new(() => Pool(name));
 
     /// <summary>
     /// Builds the pool for one named configuration.

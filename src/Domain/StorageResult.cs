@@ -73,6 +73,11 @@ public sealed record StorageResult<T> where T : notnull
     /// <summary>Reads the value of a successful result.</summary>
     /// <param name="value">The value, when the operation succeeded.</param>
     /// <returns><see langword="true"/> when the operation succeeded.</returns>
+    /// <remarks>
+    /// A false answer states that <see cref="Error"/> is there, so the failing branch reads it without a
+    /// null check the compiler would otherwise demand.
+    /// </remarks>
+    [MemberNotNullWhen(false, nameof(Error))]
     public bool TryGetValue([NotNullWhen(true)] out T? value)
     {
         value = _value;

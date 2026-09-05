@@ -54,6 +54,9 @@ public sealed class MinioContainerFixture : IAsyncLifetime
     /// <summary>Gets the SDK client pointed at the running container.</summary>
     public IMinioClient Client => _provider.GetRequiredService<IMinioClient>();
 
+    /// <summary>Gets the bucket operations pointed at the running container.</summary>
+    public IBuckets Buckets => _provider.GetRequiredService<IBuckets>();
+
     /// <inheritdoc />
     public async Task InitializeAsync()
     {

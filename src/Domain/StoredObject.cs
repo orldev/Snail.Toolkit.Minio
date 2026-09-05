@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace Snail.Toolkit.Minio.Domain;
 
 /// <summary>
@@ -29,4 +31,11 @@ public sealed record StoredObject
 
     /// <summary>Gets when the object was last written.</summary>
     public DateTimeOffset? LastModified { get; init; }
+
+    /// <summary>Gets the user metadata stored with the object.</summary>
+    /// <remarks>
+    /// The names are as they were written, without the <c>x-amz-meta-</c> the wire adds and removes. What
+    /// the protocol itself defines — the media type, the length — is not repeated here.
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> Metadata { get; init; } = FrozenDictionary<string, string>.Empty;
 }

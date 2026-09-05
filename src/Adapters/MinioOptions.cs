@@ -83,6 +83,18 @@ public sealed record MinioOptions
     /// <summary>Gets the delay before the first retry; each further attempt doubles it.</summary>
     public TimeSpan RetryDelay { get; init; } = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>Gets how many failures in a row stop the adapter from trying at all.</summary>
+    /// <remarks>
+    /// Once a server is refusing everything, every further call spends its retries discovering that again,
+    /// and the retries themselves are what keeps the server down. After this many consecutive transient
+    /// failures the adapter answers immediately for <see cref="CircuitBreakDuration"/>, then lets one call
+    /// through to find out whether anything changed. Zero turns this off.
+    /// </remarks>
+    public int CircuitBreakFailures { get; init; } = 10;
+
+    /// <summary>Gets how long the adapter answers without asking after it has stopped trying.</summary>
+    public TimeSpan CircuitBreakDuration { get; init; } = TimeSpan.FromSeconds(5);
+
     /// <summary>Gets how long a signed read URL stays valid.</summary>
     /// <remarks>
     /// Reads are issued against a URL this library signs itself. The URL never leaves the process, so this

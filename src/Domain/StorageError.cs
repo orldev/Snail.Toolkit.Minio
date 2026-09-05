@@ -21,6 +21,13 @@ public sealed record StorageError(StorageErrorKind Kind, string Message)
     /// <summary>Gets the exception this error was translated from.</summary>
     public Exception? Cause { get; init; }
 
+    /// <summary>Gets how long the server asked the caller to wait before trying again.</summary>
+    /// <remarks>
+    /// Read from <c>Retry-After</c>. A server under load says here what it wants, and a client that waits
+    /// its own interval instead is part of what is keeping the server under load.
+    /// </remarks>
+    public TimeSpan? RetryAfter { get; init; }
+
     /// <inheritdoc />
     public override string ToString()
         => Code is null

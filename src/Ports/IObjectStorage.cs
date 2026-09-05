@@ -24,6 +24,11 @@ public interface IObjectStorage
     /// <param name="options">What to name it and how to describe it.</param>
     /// <param name="cancellationToken">Cancels the upload.</param>
     /// <returns>What was stored, or why it could not be.</returns>
+    /// <remarks>
+    /// The answer carries no <see cref="StoredObject.LastModified"/>: a write is acknowledged with an
+    /// entity tag, not with the moment the store recorded, and inventing one from this machine's clock
+    /// would be worse than leaving it unknown. Call <see cref="StatAsync"/> where the moment matters.
+    /// </remarks>
     Task<StorageResult<StoredObject>> PutAsync(
         string bucket,
         Stream content,
@@ -88,6 +93,87 @@ public interface IObjectStorage
     Task<StorageResult<StoredObject>> StatAsync(
         string bucket,
         string name,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Asks whether an object is there.</summary>
+    /// <param name="bucket">The bucket to look in.</param>
+    /// <param name="name">The object to look for.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>Whether it exists, or why the question could not be answered.</returns>
+    /// <remarks>
+    /// A missing object is an answer of <see langword="false"/>, not a failure. A failure here means the
+    /// question itself could not be put to the server.
+    /// </remarks>
+    Task<StorageResult<bool>> ExistsAsync(
+        string bucket,
+        string name,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Lists a page of the objects in a bucket.</summary>
+    /// <param name="bucket">The bucket to list.</param>
+    /// <param name="options">What to list, and how much of it.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>A page of objects, or why the bucket could not be listed.</returns>
+    /// <remarks>
+    /// <para>
+    /// For a screen of results. Walking a whole bucket goes through <see cref="EnumerateAsync"/> instead.
+    /// </para>
+    /// <para>
+    /// Resuming from <see cref="ListOptions.Cursor"/> costs a walk to that point: the SDK offers no way to
+    /// start a listing after a given name, so the server lists from the beginning and this skips. Fine for
+    /// a few pages, wrong for a bucket with a million objects.
+    /// </para>
+    /// </remarks>
+    Task<StorageResult<ObjectPage>> ListAsync(
+        string bucket,
+        ListOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Walks every object in a bucket, once, forwards.</summary>
+    /// <param name="bucket">The bucket to walk.</param>
+    /// <param name="options">What to list; the page size and cursor do not apply here.</param>
+    /// <param name="cancellationToken">Stops the walk.</param>
+    /// <returns>Each object in turn, or the failure that ended the walk.</returns>
+    /// <remarks>
+    /// A walk has nowhere to put a result once it has started yielding, so a failure arrives as the last
+    /// item of the sequence rather than as an exception. Read each item, and stop at the first one that
+    /// carries an error.
+    /// </remarks>
+    IAsyncEnumerable<StorageResult<StoredObject>> EnumerateAsync(
+        string bucket,
+        ListOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Signs a URL that reads an object.</summary>
+    /// <param name="bucket">The bucket the object lives in.</param>
+    /// <param name="name">The object to read.</param>
+    /// <param name="lifetime">How long the URL stays valid; the configured lifetime when omitted.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>A URL anyone holding it can read the object with, or why it could not be signed.</returns>
+    /// <remarks>
+    /// Signing happens locally, without asking the server. The URL carries the credentials' authority for
+    /// as long as it lives, so it is handed to a browser and not written to a log.
+    /// </remarks>
+    Task<StorageResult<Uri>> SignedUrlAsync(
+        string bucket,
+        string name,
+        TimeSpan? lifetime = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Signs a URL that writes an object.</summary>
+    /// <param name="bucket">The bucket to write into.</param>
+    /// <param name="name">The object to write.</param>
+    /// <param name="lifetime">How long the URL stays valid; the configured lifetime when omitted.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>A URL that accepts a PUT of the object, or why it could not be signed.</returns>
+    /// <remarks>
+    /// The upload never passes through this application, which is the point: a browser sends the bytes
+    /// straight to the store.
+    /// </remarks>
+    Task<StorageResult<Uri>> SignedUploadUrlAsync(
+        string bucket,
+        string name,
+        TimeSpan? lifetime = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>Removes an object.</summary>

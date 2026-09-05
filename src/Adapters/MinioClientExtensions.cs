@@ -17,6 +17,11 @@ namespace Snail.Toolkit.Minio.Adapters;
 /// Cancellation is deliberately not turned into a result: a cancelled token raises
 /// <see cref="OperationCanceledException"/>, matching what the TPL and ASP.NET Core expect.
 /// </para>
+/// <para>
+/// <b>No retries and no circuit breaker.</b> Those live in <see cref="MinioObjectStorage"/>, and a call
+/// made here — or on an <see cref="IMinioClient"/> resolved from the container — goes straight to the
+/// server, once. Code that wants the resilience takes <see cref="Ports.IObjectStorage"/> instead.
+/// </para>
 /// </remarks>
 public static class MinioClientExtensions
 {

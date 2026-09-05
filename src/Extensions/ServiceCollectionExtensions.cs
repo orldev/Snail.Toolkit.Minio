@@ -15,7 +15,7 @@ namespace Snail.Toolkit.Minio.Extensions;
 /// <remarks>
 /// <para>
 /// One server is registered with <see cref="AddMinio"/> and resolved as
-/// <see cref="IObjectStorage"/>. Further servers are registered with <see cref="AddKeyedMinio"/> and
+/// <see cref="IObjectStorage"/>, or as <see cref="IBuckets"/> for the containers objects live in. Further servers are registered with <see cref="AddKeyedMinio"/> and
 /// resolved by their key, because a container holds one unkeyed registration per service type and a second
 /// unkeyed <c>AddMinio</c> would silently be ignored.
 /// </para>
@@ -56,6 +56,7 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IMinioClient>(MinioOptions.SectionName));
         services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IObjectStorage>(MinioOptions.SectionName));
+        services.TryAddSingleton(sp => sp.GetRequiredKeyedService<IBuckets>(MinioOptions.SectionName));
 
         return services;
     }
@@ -103,7 +104,7 @@ public static class ServiceCollectionExtensions
             name,
             (provider, _) => provider.GetRequiredService<IMinioClients>().Create(name, configureClient));
 
-        services.TryAddKeyedSingleton<IObjectStorage>(
+        services.TryAddKeyedSingleton(
             name,
             (provider, _) => new MinioObjectStorage(
                 name,
@@ -111,6 +112,14 @@ public static class ServiceCollectionExtensions
                 provider.GetRequiredService<MinioTransport>().CreateClient(name),
                 provider.GetRequiredService<IOptionsMonitor<MinioOptions>>(),
                 provider.GetService<ILogger<MinioObjectStorage>>() ?? NullLogger<MinioObjectStorage>.Instance));
+
+        services.TryAddKeyedSingleton<IObjectStorage>(
+            name,
+            (provider, _) => provider.GetRequiredKeyedService<MinioObjectStorage>(name));
+
+        services.TryAddKeyedSingleton<IBuckets>(
+            name,
+            (provider, _) => provider.GetRequiredKeyedService<MinioObjectStorage>(name));
 
         return services;
     }

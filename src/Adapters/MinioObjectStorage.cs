@@ -1,4 +1,6 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -33,18 +35,32 @@ namespace Snail.Toolkit.Minio.Adapters;
 /// of one.
 /// </para>
 /// </remarks>
-public sealed class MinioObjectStorage : IObjectStorage, IDisposable
+public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 {
     /// <summary>The name of the activity source every operation reports under.</summary>
     public const string ActivitySourceName = "Snail.Toolkit.Minio";
 
     private static readonly ActivitySource Source = new(ActivitySourceName);
 
+    /// <summary>The longest this adapter waits between attempts, however the settings are written.</summary>
+    private static readonly TimeSpan MaximumBackoff = TimeSpan.FromSeconds(30);
+
+    /// <summary>What the wire puts in front of a user's own metadata names.</summary>
+    private const string MetadataPrefix = "x-amz-meta-";
+
+    /// <summary>The names a server reports as metadata that no caller ever stored.</summary>
+    private static readonly HashSet<string> ProtocolNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Content-Type", "Content-Length", "Content-Encoding", "Content-Disposition", "Content-Language",
+        "Cache-Control", "Expires", "ETag", "Last-Modified", "Accept-Ranges", "Date", "Server", "Connection"
+    };
+
     private readonly string _name;
     private readonly IMinioClient _client;
     private readonly HttpClient _http;
     private readonly IOptionsMonitor<MinioOptions> _options;
     private readonly ILogger _logger;
+    private readonly CircuitBreaker _breaker = new();
 
     private bool _disposed;
 
@@ -99,17 +115,24 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
         if (!TryResolveSize(content, options.Size, out var size, out var sizeFault))
             return StorageResult<StoredObject>.Failure(sizeFault);
 
+        if (Fault(options.Metadata) is { } metadataFault)
+            return StorageResult<StoredObject>.Failure(metadataFault);
+
         using var activity = Start("put", bucket, name);
 
-        var response = await MinioClientExtensions.ExecuteAsync(
-            () => _client.PutObjectAsync(
-                Describe(new PutObjectArgs()
-                    .WithBucket(bucket)
-                    .WithObject(name)
-                    .WithContentType(mediaType)
-                    .WithStreamData(content)
-                    .WithObjectSize(size), options.Metadata),
+        var response = await RetryAsync(
+            "put",
+            () => MinioClientExtensions.ExecuteAsync(
+                () => _client.PutObjectAsync(
+                    Describe(new PutObjectArgs()
+                        .WithBucket(bucket)
+                        .WithObject(name)
+                        .WithContentType(mediaType)
+                        .WithStreamData(content)
+                        .WithObjectSize(size), options.Metadata),
+                    cancellationToken),
                 cancellationToken),
+            () => false,
             cancellationToken).ConfigureAwait(false);
 
         if (!response.TryGetValue(out var stored))
@@ -121,7 +144,11 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             Name = name,
             Size = size,
             MediaType = mediaType,
-            ETag = stored.Etag
+            ETag = stored.Etag,
+            Metadata = options.Metadata is null
+                ? FrozenDictionary<string, string>.Empty
+                : options.Metadata.ToFrozenDictionary(
+                    entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase)
         });
     }
 
@@ -145,10 +172,19 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
         if (!opened.TryGetValue(out var response))
             return Failed<ObjectContent>("get", bucket, name, opened.Error!, activity);
 
-        var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
-        return StorageResult<ObjectContent>.Success(
-            new ObjectContent(Describe(bucket, name, response), new ResponseStream(stream, response)));
+            return StorageResult<ObjectContent>.Success(
+                new ObjectContent(Describe(bucket, name, response), new ResponseStream(stream, response)));
+        }
+        catch
+        {
+            response.Dispose();
+
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -176,6 +212,12 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             return Task.FromResult(StorageResult<StoredObject>.Failure(
                 new StorageError(StorageErrorKind.InvalidArgument, $"The length has to be positive, was {length}.")));
 
+        if (length - 1 > long.MaxValue - offset)
+            return Task.FromResult(StorageResult<StoredObject>.Failure(
+                new StorageError(
+                    StorageErrorKind.InvalidArgument,
+                    $"A range of {length} bytes from {offset} ends past the largest addressable byte.")));
+
         return CopyAsync(bucket, name, destination, (offset, length), cancellationToken);
     }
 
@@ -200,6 +242,191 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             return Failed<StoredObject>("stat", bucket, name, stat.Error!, activity);
 
         return StorageResult<StoredObject>.Success(Describe(bucket, name, described));
+    }
+
+    /// <inheritdoc />
+    public async Task<StorageResult<bool>> ExistsAsync(
+        string bucket,
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        var stat = await StatAsync(bucket, name, cancellationToken).ConfigureAwait(false);
+
+        if (stat.IsSuccess)
+            return StorageResult<bool>.Success(true);
+
+        return stat.Error.Kind is StorageErrorKind.ObjectNotFound or StorageErrorKind.BucketNotFound
+            ? StorageResult<bool>.Success(false)
+            : StorageResult<bool>.Failure(stat.Error);
+    }
+
+    /// <inheritdoc />
+    public async Task<StorageResult<ObjectPage>> ListAsync(
+        string bucket,
+        ListOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+
+        options ??= new ListOptions();
+
+        if (options.PageSize <= 0)
+            return StorageResult<ObjectPage>.Failure(new StorageError(
+                StorageErrorKind.InvalidArgument,
+                $"The page size has to be positive, was {options.PageSize}."));
+
+        using var activity = Start("list", bucket, options.Prefix ?? string.Empty);
+
+        var page = await RetryAsync(
+            "list",
+            () => PageAsync(bucket, options, cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        return page.IsSuccess
+            ? page
+            : Failed<ObjectPage>("list", bucket, options.Prefix ?? string.Empty, page.Error!, activity);
+    }
+
+    /// <inheritdoc />
+    public async IAsyncEnumerable<StorageResult<StoredObject>> EnumerateAsync(
+        string bucket,
+        ListOptions? options = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+
+        options ??= new ListOptions();
+
+        await using var walk = _client
+            .ListObjectsEnumAsync(Listing(bucket, options), cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        while (true)
+        {
+            Item? item = null;
+            StorageError? failure = null;
+
+            try
+            {
+                if (await walk.MoveNextAsync().ConfigureAwait(false))
+                    item = walk.Current;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                failure = MinioErrors.From(exception);
+            }
+
+            if (failure is not null)
+            {
+                yield return StorageResult<StoredObject>.Failure(failure);
+
+                yield break;
+            }
+
+            if (item is null)
+                yield break;
+
+            if (!item.IsDir)
+                yield return StorageResult<StoredObject>.Success(Describe(bucket, item));
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<StorageResult<Uri>> SignedUrlAsync(
+        string bucket,
+        string name,
+        TimeSpan? lifetime = null,
+        CancellationToken cancellationToken = default)
+        => SignedAsync(
+            bucket,
+            name,
+            lifetime,
+            seconds => _client.PresignedGetObjectAsync(new PresignedGetObjectArgs()
+                .WithBucket(bucket)
+                .WithObject(name)
+                .WithExpiry(seconds)),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<StorageResult<Uri>> SignedUploadUrlAsync(
+        string bucket,
+        string name,
+        TimeSpan? lifetime = null,
+        CancellationToken cancellationToken = default)
+        => SignedAsync(
+            bucket,
+            name,
+            lifetime,
+            seconds => _client.PresignedPutObjectAsync(new PresignedPutObjectArgs()
+                .WithBucket(bucket)
+                .WithObject(name)
+                .WithExpiry(seconds)),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<StorageResult> CreateAsync(string bucket, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+
+        var exists = await ExistsAsync(bucket, cancellationToken).ConfigureAwait(false);
+
+        if (exists.TryGetValue(out var there) && there)
+            return StorageResult.Success();
+
+        using var activity = Start("bucket.create", bucket, string.Empty);
+
+        var created = await RetryAsync(
+            "bucket.create",
+            () => Valueless(() => _client.MakeBucketAsync(
+                new MakeBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        return Answer("bucket.create", bucket, created, activity);
+    }
+
+    /// <inheritdoc />
+    public async Task<StorageResult> RemoveAsync(string bucket, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+
+        using var activity = Start("bucket.remove", bucket, string.Empty);
+
+        var removed = await RetryAsync(
+            "bucket.remove",
+            () => Valueless(() => _client.RemoveBucketAsync(
+                new RemoveBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        return Answer("bucket.remove", bucket, removed, activity);
+    }
+
+    /// <inheritdoc />
+    public async Task<StorageResult<bool>> ExistsAsync(string bucket, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+
+        using var activity = Start("bucket.exists", bucket, string.Empty);
+
+        var exists = await RetryAsync(
+            "bucket.exists",
+            () => MinioClientExtensions.ExecuteAsync(
+                async () => await _client
+                    .BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket), cancellationToken)
+                    .ConfigureAwait(false),
+                cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        return exists.IsSuccess
+            ? exists
+            : Failed<bool>("bucket.exists", bucket, string.Empty, exists.Error!, activity);
     }
 
     /// <inheritdoc />
@@ -407,6 +634,162 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
     }
 
     /// <summary>
+    /// Reads one page of a listing.
+    /// </summary>
+    /// <param name="bucket">The bucket to list.</param>
+    /// <param name="options">What to list, and how much of it.</param>
+    /// <param name="cancellationToken">Cancels the listing.</param>
+    /// <returns>The page, or why the bucket could not be listed.</returns>
+    private async Task<StorageResult<ObjectPage>> PageAsync(
+        string bucket,
+        ListOptions options,
+        CancellationToken cancellationToken)
+    {
+        var objects = new List<StoredObject>();
+        var prefixes = new List<string>();
+        var skipping = options.Cursor is not null;
+
+        string? cursor = null;
+
+        try
+        {
+            await foreach (var item in _client
+                .ListObjectsEnumAsync(Listing(bucket, options), cancellationToken)
+                .ConfigureAwait(false))
+            {
+                if (skipping)
+                {
+                    skipping = !string.Equals(item.Key, options.Cursor, StringComparison.Ordinal);
+
+                    continue;
+                }
+
+                if (item.IsDir)
+                {
+                    prefixes.Add(item.Key);
+
+                    continue;
+                }
+
+                if (objects.Count == options.PageSize)
+                {
+                    cursor = objects[^1].Name;
+
+                    break;
+                }
+
+                objects.Add(Describe(bucket, item));
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return StorageResult<ObjectPage>.Failure(MinioErrors.From(exception));
+        }
+
+        return StorageResult<ObjectPage>.Success(new ObjectPage(objects, cursor) { Prefixes = prefixes });
+    }
+
+    /// <summary>
+    /// Builds the request one listing is read with.
+    /// </summary>
+    /// <param name="bucket">The bucket to list.</param>
+    /// <param name="options">What to list.</param>
+    /// <returns>The request.</returns>
+    /// <remarks>
+    /// User metadata is asked for, so a listing describes what it found rather than only naming it.
+    /// </remarks>
+    private static ListObjectsArgs Listing(string bucket, ListOptions options)
+    {
+        var listing = new ListObjectsArgs()
+            .WithBucket(bucket)
+            .WithRecursive(options.IsRecursive)
+            .WithIncludeUserMetadata(true);
+
+        return options.Prefix is { } prefix ? listing.WithPrefix(prefix) : listing;
+    }
+
+    /// <summary>
+    /// Signs a URL and checks that what came back is one.
+    /// </summary>
+    /// <param name="bucket">The bucket the object lives in.</param>
+    /// <param name="name">The object the URL addresses.</param>
+    /// <param name="lifetime">How long it stays valid, or the configured lifetime.</param>
+    /// <param name="sign">Performs the signing for a number of seconds.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>The URL, or why it could not be signed.</returns>
+    private async Task<StorageResult<Uri>> SignedAsync(
+        string bucket,
+        string name,
+        TimeSpan? lifetime,
+        Func<int, Task<string>> sign,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        var wanted = lifetime ?? Settings.SignedUrlLifetime;
+
+        if (wanted < TimeSpan.FromSeconds(1) || wanted > TimeSpan.FromDays(7))
+            return StorageResult<Uri>.Failure(new StorageError(
+                StorageErrorKind.InvalidArgument,
+                $"A signed URL lives between a second and seven days, not '{wanted}'."));
+
+        var signed = await MinioClientExtensions
+            .ExecuteAsync(() => sign((int)wanted.TotalSeconds), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!signed.TryGetValue(out var url))
+            return StorageResult<Uri>.Failure(signed.Error!);
+
+        return Uri.TryCreate(url, UriKind.Absolute, out var address)
+            ? StorageResult<Uri>.Success(address)
+            : StorageResult<Uri>.Failure(new StorageError(
+                StorageErrorKind.Upstream,
+                "The client signed something that is not an absolute URL."));
+    }
+
+    /// <summary>
+    /// Runs an SDK call that produces nothing, in the shape the retry funnel takes.
+    /// </summary>
+    /// <param name="operation">The call to run.</param>
+    /// <param name="cancellationToken">The caller's token.</param>
+    /// <returns>Success carrying nothing of interest, or the failure.</returns>
+    private static async Task<StorageResult<bool>> Valueless(
+        Func<Task> operation,
+        CancellationToken cancellationToken)
+    {
+        var result = await MinioClientExtensions.ExecuteAsync(operation, cancellationToken).ConfigureAwait(false);
+
+        return result.IsSuccess ? StorageResult<bool>.Success(true) : StorageResult<bool>.Failure(result.Error);
+    }
+
+    /// <summary>
+    /// Turns the funnel's answer back into one that carries no value.
+    /// </summary>
+    /// <param name="operation">The operation that ran.</param>
+    /// <param name="bucket">The bucket it addressed.</param>
+    /// <param name="result">What the funnel answered.</param>
+    /// <param name="activity">The activity to mark on failure.</param>
+    /// <returns>Success, or the failure, reported on the way.</returns>
+    private StorageResult Answer(
+        string operation,
+        string bucket,
+        StorageResult<bool> result,
+        Activity? activity)
+    {
+        if (result.IsSuccess)
+            return StorageResult.Success();
+
+        Report(operation, bucket, string.Empty, result.Error, activity);
+
+        return StorageResult.Failure(result.Error);
+    }
+
+    /// <summary>
     /// Repeats an operation while it fails for a reason that may not repeat.
     /// </summary>
     /// <typeparam name="T">What the operation produces.</typeparam>
@@ -415,6 +798,10 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
     /// <param name="prepare">Puts the world back where the next attempt can start; false stops retrying.</param>
     /// <param name="cancellationToken">Cancels the wait between attempts.</param>
     /// <returns>The first successful outcome, or the last failure.</returns>
+    /// <remarks>
+    /// Every call the adapter makes goes through here, including the ones that are never retried, because
+    /// this is also where the circuit breaker decides whether the server is worth asking at all.
+    /// </remarks>
     private async Task<StorageResult<T>> RetryAsync<T>(
         string operation,
         Func<Task<StorageResult<T>>> attempt,
@@ -424,14 +811,36 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
     {
         var settings = Settings;
 
+        if (!_breaker.TryEnter(settings, out var closedFor))
+            return StorageResult<T>.Failure(new StorageError(
+                StorageErrorKind.Upstream,
+                $"Not attempted: {settings.CircuitBreakFailures} calls in a row failed, "
+                + $"so this configuration is not being used for another {closedFor}.")
+            {
+                RetryAfter = closedFor
+            });
+
         for (var attempted = 0; ; attempted++)
         {
             var result = await attempt().ConfigureAwait(false);
 
-            if (result.IsSuccess || attempted >= settings.RetryAttempts || !IsWorthRetrying(result.Error) || !prepare())
+            if (result.IsSuccess)
+            {
+                _breaker.Succeeded();
+
+                return result;
+            }
+
+            var worthRetrying = IsWorthRetrying(result.Error);
+
+            if (worthRetrying)
+                _breaker.Failed(settings);
+
+            if (attempted >= settings.RetryAttempts || !worthRetrying || !prepare())
                 return result;
 
-            var delay = settings.RetryDelay * Math.Pow(2, attempted);
+            if (!TryWait(settings, attempted, result.Error, out var delay))
+                return result;
 
             _logger.LogDebug(
                 "Minio {Operation} failed with {Kind}, retrying in {Delay}. {Message}",
@@ -445,12 +854,68 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
     }
 
     /// <summary>
+    /// Works out whether to wait, and for how long.
+    /// </summary>
+    /// <param name="settings">The settings the wait grows from.</param>
+    /// <param name="attempted">How many attempts have already failed.</param>
+    /// <param name="error">The failure that would be retried.</param>
+    /// <param name="delay">How long to wait before the next attempt.</param>
+    /// <returns><see langword="false"/> when the server asked for longer than is worth waiting.</returns>
+    /// <remarks>
+    /// A server that answers <c>Retry-After: 300</c> is saying it will not be ready inside any request's
+    /// lifetime. Waiting that long inside a call nobody can see is worse than answering now and letting the
+    /// caller decide.
+    /// </remarks>
+    private static bool TryWait(MinioOptions settings, int attempted, StorageError error, out TimeSpan delay)
+    {
+        delay = Backoff(settings, attempted);
+
+        if (error.RetryAfter is not { } asked)
+            return true;
+
+        if (asked > MaximumBackoff)
+            return false;
+
+        if (asked > delay)
+            delay = asked;
+
+        return true;
+    }
+
+    /// <summary>
     /// Decides whether a failure is worth another attempt.
     /// </summary>
     /// <param name="error">The failure to judge.</param>
     /// <returns><see langword="true"/> when the same call may yet succeed.</returns>
+    /// <remarks>
+    /// A lost connection and a timeout, plus the statuses a server sends while it is briefly unable to
+    /// answer. A rolling deployment answers 502 and 503 for a few seconds, and a client that gives up on
+    /// those turns a deployment into an outage. The S3 codes are there because the SDK reports a 503 by
+    /// code and without a status, and the same failure must not depend on which path it arrived by.
+    /// </remarks>
     private static bool IsWorthRetrying(StorageError error)
-        => error.Kind is StorageErrorKind.Connection or StorageErrorKind.Timeout;
+        => error.Kind is StorageErrorKind.Connection or StorageErrorKind.Timeout
+            || error.StatusCode is 408 or 429 or 500 or 502 or 503 or 504
+            || error.Code is "SlowDown" or "InternalError" or "ServiceUnavailable" or "RequestTimeout" or "Busy";
+
+    /// <summary>
+    /// Works out how long to wait before the next attempt.
+    /// </summary>
+    /// <param name="settings">The settings the delay grows from.</param>
+    /// <param name="attempted">How many attempts have already failed.</param>
+    /// <returns>The wait, doubling per attempt and capped.</returns>
+    /// <remarks>
+    /// Capped because the doubling is otherwise unbounded: a generous delay and a generous attempt count
+    /// multiply into a wait longer than the timer accepts, which raises out of a call that promised to
+    /// answer.
+    /// </remarks>
+    private static TimeSpan Backoff(MinioOptions settings, int attempted)
+    {
+        var doublings = Math.Min(attempted, 16);
+        var delay = settings.RetryDelay * Math.Pow(2, doublings);
+
+        return delay < MaximumBackoff ? delay : MaximumBackoff;
+    }
 
     /// <summary>
     /// Returns a destination to where the read started.
@@ -507,7 +972,8 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
         activity?.SetStatus(ActivityStatusCode.Error, error.Message);
         activity?.SetTag("storage.error", error.Kind.ToString());
 
-        _logger.LogWarning(
+        _logger.Log(
+            IsExpected(error.Kind) ? LogLevel.Debug : LogLevel.Warning,
             "Minio {Operation} on {Bucket}/{Object} failed with {Kind}{Status}. {Message}",
             operation,
             bucket,
@@ -516,6 +982,23 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             error.StatusCode is { } status ? $" ({status})" : string.Empty,
             error.Message);
     }
+
+    /// <summary>
+    /// Decides whether a failure is part of ordinary work.
+    /// </summary>
+    /// <param name="kind">The failure to judge.</param>
+    /// <returns><see langword="true"/> when an operator has no reason to look at it.</returns>
+    /// <remarks>
+    /// A missing object is an answer, not an incident. Logging it at warning turns a workload that checks
+    /// whether things exist into a wall of alarms nobody reads.
+    /// </remarks>
+    private static bool IsExpected(StorageErrorKind kind)
+        => kind is StorageErrorKind.ObjectNotFound
+            or StorageErrorKind.BucketNotFound
+            or StorageErrorKind.InvalidArgument
+            or StorageErrorKind.InvalidObjectName
+            or StorageErrorKind.InvalidBucketName
+            or StorageErrorKind.NotSupported;
 
     /// <summary>
     /// Opens an activity for one operation.
@@ -587,12 +1070,60 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
     /// <returns>The name to store under.</returns>
     private static string WithExtension(string name, string mediaType)
     {
+        if (string.Equals(mediaType, MediaTypes.Default, StringComparison.OrdinalIgnoreCase))
+            return name;
+
         if (!MediaTypes.TryGetExtension(mediaType, out var extension)
             || name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
             return name;
 
         return name + extension;
     }
+
+    /// <summary>
+    /// Finds metadata that cannot be sent as headers.
+    /// </summary>
+    /// <param name="metadata">The metadata to judge.</param>
+    /// <returns>What is wrong with it, or <see langword="null"/> when it can be sent.</returns>
+    /// <remarks>
+    /// A name outside the characters a header name allows, or a value carrying a carriage return, is the
+    /// classic response-splitting payload. Refusing it here keeps it away from the SDK, which would either
+    /// throw from somewhere the caller cannot see or, worse, send it.
+    /// </remarks>
+    private static StorageError? Fault(IReadOnlyDictionary<string, string>? metadata)
+    {
+        if (metadata is null)
+            return null;
+
+        foreach (var (key, value) in metadata)
+        {
+            if (string.IsNullOrWhiteSpace(key) || !key.All(IsHeaderName))
+                return new StorageError(
+                    StorageErrorKind.InvalidArgument,
+                    $"The metadata name '{key}' is not a header name.");
+
+            if (value.Any(char.IsControl))
+                return new StorageError(
+                    StorageErrorKind.InvalidArgument,
+                    $"The metadata value of '{key}' carries a control character.");
+
+            if (!value.All(char.IsAscii))
+                return new StorageError(
+                    StorageErrorKind.InvalidArgument,
+                    $"The metadata value of '{key}' is not US-ASCII. Headers cannot carry anything else; "
+                    + "encode the value yourself if it has to travel.");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Decides whether a character may appear in a header name.
+    /// </summary>
+    /// <param name="candidate">The character to judge.</param>
+    /// <returns><see langword="true"/> when RFC 7230 allows it in a token.</returns>
+    private static bool IsHeaderName(char candidate)
+        => char.IsAsciiLetterOrDigit(candidate) || "!#$%&\'*+-.^_`|~".Contains(candidate, StringComparison.Ordinal);
 
     /// <summary>
     /// Adds user metadata to an upload.
@@ -627,8 +1158,74 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
         Size = stat.Size,
         MediaType = string.IsNullOrWhiteSpace(stat.ContentType) ? MediaTypes.Default : stat.ContentType,
         ETag = stat.ETag,
-        LastModified = stat.LastModified
+        LastModified = stat.LastModified,
+        Metadata = UserMetadata(stat.MetaData)
     };
+
+    /// <summary>
+    /// Keeps the metadata a caller wrote and drops what the protocol added.
+    /// </summary>
+    /// <param name="reported">Everything the SDK reported as metadata.</param>
+    /// <returns>Only the names a caller would recognise.</returns>
+    /// <remarks>
+    /// The SDK mixes the media type and the transfer headers into the same dictionary as the user's own
+    /// names, so handing it back whole would invent metadata nobody stored.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, string> UserMetadata(IDictionary<string, string>? reported)
+    {
+        if (reported is null)
+            return FrozenDictionary<string, string>.Empty;
+
+        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, value) in reported.Where(pair => !IsProtocol(pair.Key)))
+        {
+            metadata[key] = value;
+        }
+
+        return metadata.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Decides whether a name belongs to the protocol rather than to the caller.
+    /// </summary>
+    /// <param name="name">The name to judge.</param>
+    /// <returns><see langword="true"/> when the wire, not the caller, put it there.</returns>
+    private static bool IsProtocol(string name)
+        => name.StartsWith("x-amz-", StringComparison.OrdinalIgnoreCase)
+            || ProtocolNames.Contains(name);
+
+    /// <summary>
+    /// Describes an object from what a listing reported.
+    /// </summary>
+    /// <param name="bucket">The bucket listed.</param>
+    /// <param name="item">One entry of the listing.</param>
+    /// <returns>The metadata a caller sees.</returns>
+    private static StoredObject Describe(string bucket, Item item) => new()
+    {
+        Bucket = bucket,
+        Name = item.Key,
+        Size = (long)item.Size,
+        MediaType = string.IsNullOrWhiteSpace(item.ContentType) ? MediaTypes.Default : item.ContentType,
+        ETag = item.ETag,
+        LastModified = Moment(item.LastModifiedDateTime),
+        Metadata = UserMetadata(item.UserMetadata)
+    };
+
+    /// <summary>
+    /// Reads a moment a listing reported without assuming which clock it came from.
+    /// </summary>
+    /// <param name="reported">What the SDK parsed, when it parsed anything.</param>
+    /// <returns>The moment, in UTC.</returns>
+    private static DateTimeOffset? Moment(DateTime? reported)
+    {
+        if (reported is not { } moment)
+            return null;
+
+        return moment.Kind == DateTimeKind.Unspecified
+            ? new DateTimeOffset(DateTime.SpecifyKind(moment, DateTimeKind.Utc))
+            : new DateTimeOffset(moment.ToUniversalTime());
+    }
 
     /// <summary>
     /// Describes an object from the headers the server answered with.
@@ -652,7 +1249,13 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             Size = content.ContentRange?.Length ?? content.ContentLength ?? 0,
             MediaType = content.ContentType?.MediaType ?? MediaTypes.Default,
             ETag = response.Headers.ETag?.Tag.Trim('"'),
-            LastModified = content.LastModified
+            LastModified = content.LastModified,
+            Metadata = response.Headers
+                .Where(header => header.Key.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+                .ToFrozenDictionary(
+                    header => header.Key[MetadataPrefix.Length..],
+                    header => string.Join(", ", header.Value),
+                    StringComparer.OrdinalIgnoreCase)
         };
     }
 
@@ -662,12 +1265,20 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
     /// <param name="inner">The body being read.</param>
     /// <param name="response">The response the body belongs to.</param>
     /// <remarks>
+    /// <para>
     /// The caller is handed a stream and told it owns it. Without this, disposing that stream would leave
     /// the response — and the connection it is holding — alive until a garbage collection got to it.
+    /// </para>
+    /// <para>
+    /// Reading it after it is closed raises. The response body underneath answers zero bytes instead, which
+    /// a caller cannot tell from an empty object — a truncated download that looks like a successful one.
+    /// </para>
     /// </remarks>
     private sealed class ResponseStream(Stream inner, HttpResponseMessage response) : Stream
     {
-        public override bool CanRead => inner.CanRead;
+        private bool _disposed;
+
+        public override bool CanRead => !_disposed && inner.CanRead;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
@@ -678,13 +1289,26 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             set => throw new NotSupportedException();
         }
 
-        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            return inner.Read(buffer, offset, count);
+        }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            => inner.ReadAsync(buffer, cancellationToken);
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            return inner.ReadAsync(buffer, cancellationToken);
+        }
 
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            => inner.ReadAsync(buffer, offset, count, cancellationToken);
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            return inner.ReadAsync(buffer, offset, count, cancellationToken);
+        }
 
         public override void Flush() => inner.Flush();
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -693,16 +1317,23 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
 
         public override async ValueTask DisposeAsync()
         {
-            await inner.DisposeAsync().ConfigureAwait(false);
-            response.Dispose();
+            if (!_disposed)
+            {
+                _disposed = true;
+
+                await inner.DisposeAsync().ConfigureAwait(false);
+                response.Dispose();
+            }
 
             await base.DisposeAsync().ConfigureAwait(false);
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !_disposed)
             {
+                _disposed = true;
+
                 inner.Dispose();
                 response.Dispose();
             }
