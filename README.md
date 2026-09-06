@@ -2,7 +2,8 @@
 
 Object storage for .NET over MinIO and any S3-compatible server.
 
-Inject `IObjectStorage` and get on with it: upload, download, stream, list and share objects. Failures come
+Inject `IObjectStorage` and get on with it: upload, download, stream, list, copy and share objects, and
+let a bucket expire what it holds. Failures come
 back as data instead of exceptions, reads stream instead of buffering, ranged reads work, and retries, a
 circuit breaker, tracing and logging are already wired in.
 
@@ -135,6 +136,18 @@ await using var file = File.Create(path);
 var read = await storage.DownloadToAsync("reports", "q3.pdf", file, token);
 ```
 
+### Move an object without its bytes coming to you
+
+```csharp
+await storage.CopyAsync("uploads", "tmp/9f2c", "reports", "q3.pdf");
+await storage.RemoveAsync("uploads", "tmp/9f2c");
+```
+
+The server does the copying, so a staged file becomes a kept one for the price of a request rather than of
+its own size twice over. Copying onto a name that is taken replaces it. Nothing is reported about the copy:
+the server answers with a tag and a moment, the SDK discards them, and asking again on every call would
+make everyone pay for what few callers read — `StatAsync` is there for those who do.
+
 ### Let the browser do the transfer
 
 ```csharp
@@ -228,6 +241,26 @@ public sealed class Provisioning(IBuckets buckets)
 ```
 
 Creating one that exists succeeds. Removing one that still holds objects does not.
+
+### Let a bucket clean up after itself
+
+```csharp
+await buckets.SetExpiryAsync("uploads",
+[
+    new ExpiryRule { Id = "staged", Prefix = "tmp/", Days = 1 }
+]);
+```
+
+Some objects outlive every process that knew about them — a file staged for an answer that never came, and
+no request left to clear it. Expiry is the server's own housekeeping, and the only thing that reaches them.
+
+The call takes every rule the bucket is to have, not one to add, because that is what the protocol does: a
+server given one rule keeps only that rule. An API shaped as "add this" would quietly delete the rest. An
+empty set clears them, and `GetExpiryAsync` reads them back — a bucket that expires nothing answers with no
+rules rather than with a failure.
+
+Days, not a `TimeSpan`: whole days is the granularity S3 offers, and a finer promise would be a lie. A
+bucket that does not exist is refused here, because the server accepts rules for one and keeps nothing.
 
 ### Talk to two servers
 

@@ -85,4 +85,24 @@ public sealed class ReadmeSamples(IObjectStorage storage, IBuckets buckets, ILog
                 .MatchAsync(onSuccess: report => report.Size, onFailure: _ => 0L)
             : 0L;
     }
+
+    public async Task KeepAsync(CancellationToken token)
+    {
+        await storage.CopyAsync("uploads", "tmp/9f2c", "reports", "q3.pdf", token);
+        await storage.RemoveAsync("uploads", "tmp/9f2c", token);
+    }
+
+    public async Task SweepAsync(CancellationToken token)
+    {
+        await buckets.SetExpiryAsync(
+            "uploads",
+            [
+                new ExpiryRule { Id = "staged", Prefix = "tmp/", Days = 1 }
+            ],
+            token);
+
+        var rules = await buckets.GetExpiryAsync("uploads", token);
+
+        logger.LogInformation("{Rules} rules", rules.Value.Count);
+    }
 }

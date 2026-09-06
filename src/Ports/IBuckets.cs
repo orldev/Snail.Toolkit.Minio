@@ -30,4 +30,32 @@ public interface IBuckets
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <returns>Whether it exists, or why the question could not be answered.</returns>
     Task<StorageResult<bool>> ExistsAsync(string bucket, CancellationToken cancellationToken = default);
+
+    /// <summary>Replaces the rules by which a bucket expires its objects.</summary>
+    /// <param name="bucket">The bucket to set them on.</param>
+    /// <param name="rules">Every rule the bucket is to have; an empty set clears them.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>Success, or why the rules could not be set.</returns>
+    /// <remarks>
+    /// The whole set, not one rule, because that is what the protocol does: a server given one rule keeps
+    /// only that rule. An API shaped as "add this rule" would silently delete every other rule the bucket
+    /// had, and the caller would find out when something stopped being cleaned up.
+    /// </remarks>
+    Task<StorageResult> SetExpiryAsync(
+        string bucket,
+        IReadOnlyList<ExpiryRule> rules,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Reads the rules by which a bucket expires its objects.</summary>
+    /// <param name="bucket">The bucket to read them from.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>The rules, or why they could not be read.</returns>
+    /// <remarks>
+    /// A bucket that expires nothing answers with no rules rather than with a failure: having none is a
+    /// state a bucket is allowed to be in. Rules the protocol offers and this library does not model —
+    /// transitions between storage classes, versioned objects, incomplete uploads — are not reported.
+    /// </remarks>
+    Task<StorageResult<IReadOnlyList<ExpiryRule>>> GetExpiryAsync(
+        string bucket,
+        CancellationToken cancellationToken = default);
 }

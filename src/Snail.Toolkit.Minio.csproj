@@ -10,7 +10,7 @@
         <PackageTags>minio;s3;object-storage;aws-s3;streaming;presigned-url;resilience;dependency-injection</PackageTags>
         <Title>Snail.Toolkit.Minio</Title>
         <Authors>Toolkit</Authors>
-        <Description>Object storage for .NET over MinIO and any S3-compatible server. Inject IObjectStorage and upload, download, stream, list and share objects: failures come back as data instead of exceptions, reads stream instead of buffering, ranged reads work, and retries, a circuit breaker, tracing and logging are built in. Several servers side by side through keyed registration, settings validated at startup.</Description>
+        <Description>Object storage for .NET over MinIO and any S3-compatible server. Inject IObjectStorage and upload, download, stream, list, copy and share objects, and let a bucket expire what it holds: failures come back as data instead of exceptions, reads stream instead of buffering, ranged reads work, and retries, a circuit breaker, tracing and logging are built in. Several servers side by side through keyed registration, settings validated at startup.</Description>
         <RepositoryUrl>https://github.com/orldev/Snail.Toolkit.Minio</RepositoryUrl>
         <Copyright>Toolkit, 2026</Copyright>
         <PackageProjectUrl>https://github.com/orldev/Snail.Toolkit.Minio</PackageProjectUrl>

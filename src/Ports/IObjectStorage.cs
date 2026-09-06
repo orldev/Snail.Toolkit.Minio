@@ -188,4 +188,30 @@ public interface IObjectStorage
         string bucket,
         string name,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Copies an object to another name, without the bytes leaving the server.</summary>
+    /// <param name="sourceBucket">The bucket to copy from.</param>
+    /// <param name="sourceName">The object to copy.</param>
+    /// <param name="targetBucket">The bucket to copy into.</param>
+    /// <param name="targetName">The name to copy to.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>Success, or why the object could not be copied.</returns>
+    /// <remarks>
+    /// <para>
+    /// The server does the work: reading an object back and writing it out again would pull every byte
+    /// through the caller twice, which is the whole cost this avoids. Copying onto an existing name
+    /// replaces it.
+    /// </para>
+    /// <para>
+    /// Nothing is returned about the copy. The server answers with its own tag and moment, but the SDK
+    /// discards them, and describing the copy would mean asking a second time on every call for something
+    /// most callers never read. Whoever needs it asks <see cref="StatAsync"/>.
+    /// </para>
+    /// </remarks>
+    Task<StorageResult> CopyAsync(
+        string sourceBucket,
+        string sourceName,
+        string targetBucket,
+        string targetName,
+        CancellationToken cancellationToken = default);
 }

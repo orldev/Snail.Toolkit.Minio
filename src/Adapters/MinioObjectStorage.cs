@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Minio.DataModel;
 using Minio.DataModel.Args;
+using Minio.DataModel.ILM;
 using Snail.Toolkit.Minio.Domain;
 using Snail.Toolkit.Minio.Media;
 using Snail.Toolkit.Minio.Ports;
@@ -47,6 +48,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
     /// <summary>What the wire puts in front of a user's own metadata names.</summary>
     private const string MetadataPrefix = "x-amz-meta-";
+
+    /// <summary>The code a server answers with when a bucket expires nothing.</summary>
+    private const string NoLifecycleConfiguration = "NoSuchLifecycleConfiguration";
 
     /// <summary>The names a server reports as metadata that no caller ever stored.</summary>
     private static readonly HashSet<string> ProtocolNames = new(StringComparer.OrdinalIgnoreCase)
@@ -193,7 +197,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         string name,
         Stream destination,
         CancellationToken cancellationToken = default)
-        => CopyAsync(bucket, name, destination, range: null, cancellationToken);
+        => DownloadAsync(bucket, name, destination, range: null, cancellationToken);
 
     /// <inheritdoc />
     public Task<StorageResult<StoredObject>> DownloadRangeToAsync(
@@ -218,7 +222,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
                     StorageErrorKind.InvalidArgument,
                     $"A range of {length} bytes from {offset} ends past the largest addressable byte.")));
 
-        return CopyAsync(bucket, name, destination, (offset, length), cancellationToken);
+        return DownloadAsync(bucket, name, destination, (offset, length), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -464,6 +468,218 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     }
 
     /// <inheritdoc />
+    public async Task<StorageResult> CopyAsync(
+        string sourceBucket,
+        string sourceName,
+        string targetBucket,
+        string targetName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceBucket);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetBucket);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetName);
+
+        using var activity = Start("copy", targetBucket, targetName);
+
+        var copied = await RetryAsync(
+            "copy",
+            () => Valueless(
+                () => _client.CopyObjectAsync(
+                    new CopyObjectArgs()
+                        .WithBucket(targetBucket)
+                        .WithObject(targetName)
+                        .WithCopyObjectSource(new CopySourceObjectArgs()
+                            .WithBucket(sourceBucket)
+                            .WithObject(sourceName)),
+                    cancellationToken),
+                cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        if (copied.IsSuccess)
+            return StorageResult.Success();
+
+        Report("copy", targetBucket, targetName, copied.Error, activity);
+
+        return StorageResult.Failure(copied.Error);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The bucket is asked for first because the server does not object to rules for one that is not
+    /// there: measured against Minio 7.0.0 and server release 2025-09-07, writing a lifecycle to a
+    /// misspelled bucket answers success and keeps nothing. A caller would learn of the typo only by
+    /// noticing, months later, that nothing was ever cleaned up.
+    /// </remarks>
+    public async Task<StorageResult> SetExpiryAsync(
+        string bucket,
+        IReadOnlyList<ExpiryRule> rules,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+        ArgumentNullException.ThrowIfNull(rules);
+
+        if (Fault(rules) is { } fault)
+            return StorageResult.Failure(fault);
+
+        var exists = await ExistsAsync(bucket, cancellationToken).ConfigureAwait(false);
+
+        if (!exists.TryGetValue(out var there))
+            return StorageResult.Failure(exists.Error);
+
+        if (!there)
+            return StorageResult.Failure(new StorageError(
+                StorageErrorKind.BucketNotFound,
+                $"The bucket '{bucket}' does not exist, so nothing would expire from it."));
+
+        using var activity = Start("bucket.expiry.set", bucket, string.Empty);
+
+        var written = await RetryAsync(
+            "bucket.expiry.set",
+            () => Valueless(() => Write(bucket, rules, cancellationToken), cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        return Answer("bucket.expiry.set", bucket, written, activity);
+    }
+
+    /// <inheritdoc />
+    public async Task<StorageResult<IReadOnlyList<ExpiryRule>>> GetExpiryAsync(
+        string bucket,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
+
+        using var activity = Start("bucket.expiry.get", bucket, string.Empty);
+
+        var read = await RetryAsync(
+            "bucket.expiry.get",
+            () => MinioClientExtensions.ExecuteAsync(
+                async () => await _client
+                    .GetBucketLifecycleAsync(new GetBucketLifecycleArgs().WithBucket(bucket), cancellationToken)
+                    .ConfigureAwait(false),
+                cancellationToken),
+            () => true,
+            cancellationToken).ConfigureAwait(false);
+
+        if (read.TryGetValue(out var configuration))
+            return StorageResult<IReadOnlyList<ExpiryRule>>.Success(Expiries(configuration));
+
+        if (IsUnset(read.Error))
+            return StorageResult<IReadOnlyList<ExpiryRule>>.Success([]);
+
+        return Failed<IReadOnlyList<ExpiryRule>>("bucket.expiry.get", bucket, string.Empty, read.Error, activity);
+    }
+
+    /// <summary>
+    /// Writes the rules a bucket is to have, or clears them.
+    /// </summary>
+    /// <param name="bucket">The bucket to write to.</param>
+    /// <param name="rules">The rules to write; none means clear.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>The pending call.</returns>
+    /// <remarks>
+    /// Clearing goes through its own request because the protocol has no empty rule set: a configuration
+    /// carrying no rules is refused, and the way to have none is to remove the configuration.
+    /// </remarks>
+    private Task Write(string bucket, IReadOnlyList<ExpiryRule> rules, CancellationToken cancellationToken)
+        => rules.Count == 0
+            ? _client.RemoveBucketLifecycleAsync(
+                new RemoveBucketLifecycleArgs().WithBucket(bucket), cancellationToken)
+            : _client.SetBucketLifecycleAsync(
+                new SetBucketLifecycleArgs()
+                    .WithBucket(bucket)
+                    .WithLifecycleConfiguration(new LifecycleConfiguration([.. rules.Select(Rule)])),
+                cancellationToken);
+
+    /// <summary>
+    /// Turns one rule into what the SDK sends.
+    /// </summary>
+    /// <param name="rule">The rule to send.</param>
+    /// <returns>The same rule in the SDK's shape.</returns>
+    private static LifecycleRule Rule(ExpiryRule rule) => new(
+        null,
+        rule.Id,
+        new Expiration { Days = rule.Days },
+        null,
+        new RuleFilter(null, rule.Prefix, null),
+        null,
+        null,
+        rule.IsEnabled ? LifecycleRule.LifecycleRuleStatusEnabled : LifecycleRule.LifecycleRuleStatusDisabled);
+
+    /// <summary>
+    /// Reads back the rules this library models, and no others.
+    /// </summary>
+    /// <param name="configuration">Everything the bucket carries.</param>
+    /// <returns>The rules that expire objects after a number of days.</returns>
+    /// <remarks>
+    /// A bucket may also carry transitions, versioning rules and upload cleanups, which this library does
+    /// not model. Reporting them as expiries would say an object dies on a day it does not.
+    /// </remarks>
+    private static IReadOnlyList<ExpiryRule> Expiries(LifecycleConfiguration configuration)
+        => configuration.Rules is not { Count: > 0 } rules
+            ? []
+            : [.. rules
+                .Where(rule => rule.Expiration?.Days is > 0)
+                .Select(rule => new ExpiryRule
+                {
+                    Id = rule.ID ?? string.Empty,
+                    Days = (int)rule.Expiration!.Days!.Value,
+                    Prefix = rule.Filter?.Prefix ?? string.Empty,
+                    IsEnabled = string.Equals(
+                        rule.Status,
+                        LifecycleRule.LifecycleRuleStatusEnabled,
+                        StringComparison.OrdinalIgnoreCase)
+                })];
+
+    /// <summary>
+    /// Decides whether a failure is the server saying the bucket expires nothing.
+    /// </summary>
+    /// <param name="error">The failure to judge.</param>
+    /// <returns><see langword="true"/> when there is no configuration rather than no answer.</returns>
+    /// <remarks>
+    /// A bucket with no rules is a state, not a fault, and the protocol reports it as one: the request is
+    /// refused with <c>NoSuchLifecycleConfiguration</c>. Handing that back as a failure would make every
+    /// caller translate the same code before it could act on the answer. Judged by the code rather than by
+    /// the message, which the server is free to reword.
+    /// </remarks>
+    private static bool IsUnset(StorageError? error)
+        => string.Equals(error?.Code, NoLifecycleConfiguration, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Finds the first thing wrong with a set of rules.
+    /// </summary>
+    /// <param name="rules">The rules to judge.</param>
+    /// <returns>What is wrong, or <see langword="null"/> when they can be sent.</returns>
+    /// <remarks>
+    /// Checked here rather than at the server because the server's refusal names neither the rule nor the
+    /// field, and a caller reading it cannot tell which of its rules was the bad one.
+    /// </remarks>
+    private static StorageError? Fault(IReadOnlyList<ExpiryRule> rules)
+    {
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        foreach (var rule in rules)
+        {
+            if (string.IsNullOrWhiteSpace(rule.Id))
+                return new StorageError(StorageErrorKind.InvalidArgument, "A rule has to be named.");
+
+            if (!seen.Add(rule.Id))
+                return new StorageError(
+                    StorageErrorKind.InvalidArgument,
+                    $"The rule '{rule.Id}' is named twice, and the second would replace the first.");
+
+            if (rule.Days <= 0)
+                return new StorageError(
+                    StorageErrorKind.InvalidArgument,
+                    $"The rule '{rule.Id}' expires after {rule.Days} days, which is not a life.");
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// Only the transport is released. The SDK client belongs to the container that built it, which may
     /// hand the same instance to code that is still using it.
@@ -490,7 +706,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// A destination that can seek is rewound to where it started before a retry and after a failure, so a
     /// partly written file is never left behind for a caller who was told the read failed.
     /// </remarks>
-    private async Task<StorageResult<StoredObject>> CopyAsync(
+    private async Task<StorageResult<StoredObject>> DownloadAsync(
         string bucket,
         string name,
         Stream destination,
