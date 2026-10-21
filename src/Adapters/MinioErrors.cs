@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Xml.Linq;
 using Minio.Exceptions;
@@ -29,10 +30,17 @@ internal static class MinioErrors
     /// <param name="exception">The exception to classify.</param>
     /// <returns>The error a caller sees.</returns>
     /// <remarks>
+    /// <para>
     /// Order matters: the specific <see cref="MinioException"/> subclasses are matched before the
     /// catch-all, which is matched before the general fallback. An
     /// <see cref="OperationCanceledException"/> reaching here is the client's own request timeout, because
     /// cancellation asked for by the caller is rethrown before any translation happens.
+    /// </para>
+    /// <para>
+    /// An <see cref="InvalidOperationException"/> is the SDK refusing a state, not an argument — a MinIO-only
+    /// listing asked of another S3 server — and lands on <see cref="StorageErrorKind.Unexpected"/>, which is
+    /// logged at warning. Classified as an argument it was logged at debug, and a misconfiguration stayed unseen.
+    /// </para>
     /// </remarks>
     internal static StorageError From(Exception exception)
     {
@@ -56,7 +64,6 @@ internal static class MinioErrors
             ObjectDisposedException => StorageErrorKind.ObjectDisposed,
             NotImplementedException or NotSupportedException => StorageErrorKind.NotSupported,
             ArgumentException => StorageErrorKind.InvalidArgument,
-            InvalidOperationException => StorageErrorKind.InvalidArgument,
             _ => StorageErrorKind.Unexpected
         };
 
@@ -138,7 +145,7 @@ internal static class MinioErrors
         if (int.TryParse(asked, out var seconds))
             return seconds > 0 ? TimeSpan.FromSeconds(seconds) : TimeSpan.Zero;
 
-        if (DateTimeOffset.TryParse(asked, out var date))
+        if (DateTimeOffset.TryParse(asked, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var date))
         {
             var wait = date - DateTimeOffset.UtcNow;
 

@@ -57,6 +57,10 @@ internal sealed class MinioOptionsValidator : IValidateOptions<MinioOptions>
             return $"'{name}:{nameof(MinioOptions.Timeout)}' has to be positive, not '{timeout}'. "
                 + "A zero timeout fails every request.";
 
+        if (options.Timeout is { } overlong && overlong.TotalMilliseconds > int.MaxValue)
+            return $"'{name}:{nameof(MinioOptions.Timeout)}' has to be at most "
+                + $"'{TimeSpan.FromMilliseconds(int.MaxValue)}', not '{overlong}'; the client counts milliseconds in an int.";
+
         if (options.ConnectionLifetime <= TimeSpan.Zero)
             return $"'{name}:{nameof(MinioOptions.ConnectionLifetime)}' has to be positive, "
                 + $"not '{options.ConnectionLifetime}'.";

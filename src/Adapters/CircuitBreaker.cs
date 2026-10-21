@@ -11,7 +11,13 @@ namespace Snail.Toolkit.Minio.Adapters;
 /// call through to find out whether anything changed.
 /// </para>
 /// <para>
-/// Only failures worth retrying count. A missing object is not the server's health.
+/// Only failures worth retrying count. A missing object is not the server's health, and when the one call let
+/// through is answered with one, that answer ends the probe as a success would: the server spoke. A probe that
+/// ends without an answer — the caller cancelled it — gives the next caller the probe instead, because a probe
+/// nobody ends used to hold the gate shut until the process restarted.
+/// </para>
+/// <para>
+/// Time is read from <see cref="Environment.TickCount64"/>, which a clock adjustment does not move.
 /// </para>
 /// </remarks>
 internal sealed class CircuitBreaker
@@ -19,7 +25,7 @@ internal sealed class CircuitBreaker
     private readonly object _gate = new();
 
     private int _failures;
-    private DateTimeOffset _openedAt;
+    private long _openedAt;
     private bool _probing;
 
     /// <summary>
@@ -40,7 +46,7 @@ internal sealed class CircuitBreaker
             if (_failures < settings.CircuitBreakFailures)
                 return true;
 
-            var elapsed = DateTimeOffset.UtcNow - _openedAt;
+            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _openedAt);
 
             if (elapsed >= settings.CircuitBreakDuration && !_probing)
             {
@@ -66,6 +72,21 @@ internal sealed class CircuitBreaker
         }
     }
 
+    /// <summary>Reports that the server answered with something that is not its health.</summary>
+    /// <remarks>
+    /// The same as a success for the gate: a 404 proves the server is there, whatever it says about the object.
+    /// </remarks>
+    internal void Answered() => Succeeded();
+
+    /// <summary>Reports that an attempt ended without an answer, so the next caller may probe.</summary>
+    internal void Abandoned()
+    {
+        lock (_gate)
+        {
+            _probing = false;
+        }
+    }
+
     /// <summary>
     /// Reports a failure worth counting.
     /// </summary>
@@ -83,7 +104,7 @@ internal sealed class CircuitBreaker
                 _failures++;
 
             if (_failures >= settings.CircuitBreakFailures)
-                _openedAt = DateTimeOffset.UtcNow;
+                _openedAt = Environment.TickCount64;
         }
     }
 }

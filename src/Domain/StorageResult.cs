@@ -41,8 +41,15 @@ public sealed record StorageResult
 /// </summary>
 /// <typeparam name="T">The type produced by a successful operation.</typeparam>
 /// <remarks>
+/// <para>
 /// A successful result always carries a value: <see cref="Success"/> refuses <see langword="null"/>, so
 /// success and "there is something to read" are the same fact and callers never have to test both.
+/// </para>
+/// <para>
+/// The outcome is judged by <see cref="Error"/>, never by the value: for a value type <c>T?</c> is <c>T</c>
+/// itself, so a failed <c>StorageResult&lt;bool&gt;</c> holds a value of <see langword="false"/> that is not
+/// null, and judging by it once made every failed <c>ExistsAsync</c> read as a success.
+/// </para>
 /// </remarks>
 public sealed record StorageResult<T> where T : notnull
 {
@@ -67,8 +74,9 @@ public sealed record StorageResult<T> where T : notnull
     /// Reading this on a failed result is a mistake in the calling code rather than a runtime condition, so
     /// it throws instead of handing back a default. Use <see cref="TryGetValue"/> where the outcome is open.
     /// </remarks>
-    public T Value => _value ?? throw new InvalidOperationException(
-        $"The operation failed and carries no value. {Error}");
+    public T Value => Error is null
+        ? _value!
+        : throw new InvalidOperationException($"The operation failed and carries no value. {Error}");
 
     /// <summary>Reads the value of a successful result.</summary>
     /// <param name="value">The value, when the operation succeeded.</param>
@@ -80,9 +88,9 @@ public sealed record StorageResult<T> where T : notnull
     [MemberNotNullWhen(false, nameof(Error))]
     public bool TryGetValue([NotNullWhen(true)] out T? value)
     {
-        value = _value;
+        value = Error is null ? _value : default;
 
-        return _value is not null;
+        return Error is null;
     }
 
     /// <summary>Reports a successful operation.</summary>

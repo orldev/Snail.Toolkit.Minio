@@ -133,6 +133,11 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         if (Fault(options.Metadata) is { } metadataFault)
             return StorageResult<StoredObject>.Failure(metadataFault);
 
+        if (Written(options.Metadata) is not { } written)
+            return StorageResult<StoredObject>.Failure(new StorageError(
+                StorageErrorKind.InvalidArgument,
+                "Two metadata names differ only in case, and a header name has no case."));
+
         using var activity = Start("put", bucket, name);
 
         var response = await RetryAsync(
@@ -163,33 +168,37 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             Size = size,
             MediaType = mediaType,
             ETag = stored.Etag,
-            Metadata = Written(options.Metadata)
+            Metadata = written
         });
     }
 
     /// <summary>
-    /// The metadata an upload stored, as the caller will read it back: names in any case.
+    /// The metadata an upload will store, as the caller will read it back: names in any case.
     /// </summary>
     /// <param name="metadata">What the caller gave.</param>
-    /// <returns>A copy nobody can write through, or the shared empty one.</returns>
+    /// <returns>
+    /// A copy nobody can write through, the shared empty one, or <see langword="null"/> when two names differ
+    /// only in case.
+    /// </returns>
     /// <remarks>
-    /// Copied, not frozen: a handful of names is looked up a few times at most, and freezing costs more
-    /// than those lookups save. Two names that differ only in case are refused as freezing refused them:
-    /// the copy that finds them is given up for the dictionary, whose refusal is the one a caller saw.
+    /// Copied, not frozen: a handful of names is looked up a few times at most, and freezing costs more than
+    /// those lookups save. Made before the upload, because it is also where two names that differ only in case
+    /// are found: finding them after the upload threw out of a call whose object was already stored.
     /// </remarks>
-    private static IReadOnlyDictionary<string, string> Written(IReadOnlyDictionary<string, string>? metadata)
+    private static IReadOnlyDictionary<string, string>? Written(IReadOnlyDictionary<string, string>? metadata)
     {
         if (metadata is null || metadata.Count == 0)
             return FrozenDictionary<string, string>.Empty;
 
-        if (metadata.Count <= ObjectMetadata.MostNames && Kept(metadata) is { } kept)
-            return kept;
+        if (metadata.Count <= ObjectMetadata.MostNames)
+            return Kept(metadata);
 
         var copy = new Dictionary<string, string>(metadata.Count, StringComparer.OrdinalIgnoreCase);
 
         foreach (var (key, value) in metadata)
         {
-            copy.Add(key, value);
+            if (!copy.TryAdd(key, value))
+                return null;
         }
 
         return copy.AsReadOnly();
@@ -199,7 +208,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// Copies an upload's few names, each once in any case.
     /// </summary>
     /// <param name="metadata">What the caller gave.</param>
-    /// <returns>The copy, or <see langword="null"/> when two names differ only in case or more came than were counted.</returns>
+    /// <returns>The copy, or <see langword="null"/> when two names differ only in case.</returns>
     private static ObjectMetadata? Kept(IReadOnlyDictionary<string, string> metadata)
     {
         var kept = new ObjectMetadata(metadata.Count);
@@ -357,6 +366,12 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The walk goes through the same funnel as every other read: the first page is asked under the circuit
+    /// breaker and retried like a listing, and a failure further on is reported to the breaker and the log
+    /// before it ends the walk. It used to go to the server once, outside both, while being the read this
+    /// library recommends for a whole bucket.
+    /// </remarks>
     public async IAsyncEnumerable<StorageResult<StoredObject>> EnumerateAsync(
         string bucket,
         ListOptions? options = null,
@@ -366,42 +381,86 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         options ??= new ListOptions();
 
-        await using var walk = _client
+        var prefix = options.Prefix ?? string.Empty;
+
+        using var activity = Start("walk", bucket, prefix);
+
+        var opened = await RetryAsync(
+            "walk",
+            (Storage: this, Bucket: bucket, Options: options, CancellationToken: cancellationToken),
+            static walk => walk.Storage.OpenWalkAsync(walk.Bucket, walk.Options, walk.CancellationToken),
+            static _ => true,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!opened.TryGetValue(out var walk))
+        {
+            yield return Failed<StoredObject>("walk", bucket, prefix, opened.Error, activity);
+
+            yield break;
+        }
+
+        await using (walk.ConfigureAwait(false))
+        {
+            while (walk.Current is { } item)
+            {
+                if (!item.IsDir)
+                    yield return StorageResult<StoredObject>.Success(Describe(bucket, item));
+
+                var failure = await walk.AdvanceAsync(cancellationToken).ConfigureAwait(false);
+
+                if (failure is null)
+                    continue;
+
+                Noticed(failure);
+
+                yield return Failed<StoredObject>("walk", bucket, prefix, failure, activity);
+
+                yield break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Starts a walk and advances it to its first entry.
+    /// </summary>
+    /// <param name="bucket">The bucket to walk.</param>
+    /// <param name="options">What to list.</param>
+    /// <param name="cancellationToken">Stops the walk.</param>
+    /// <returns>The walk standing on its first entry, or on its end, or why the bucket could not be listed.</returns>
+    /// <remarks>
+    /// The first advance is where the first page is asked of the server, so it is the one attempt the retry
+    /// funnel can repeat: a walk that failed there holds nothing a caller has seen.
+    /// </remarks>
+    private async Task<StorageResult<Walk>> OpenWalkAsync(
+        string bucket,
+        ListOptions options,
+        CancellationToken cancellationToken)
+    {
+        var items = _client
             .ListObjectsEnumAsync(Listing(bucket, options, Settings.CanListUserMetadata), cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
-        while (true)
-        {
-            Item? item = null;
-            StorageError? failure = null;
+        var walk = new Walk(items);
+        var failure = await walk.AdvanceAsync(cancellationToken).ConfigureAwait(false);
 
-            try
-            {
-                if (await walk.MoveNextAsync().ConfigureAwait(false))
-                    item = walk.Current;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                failure = MinioErrors.From(exception);
-            }
+        if (failure is null)
+            return StorageResult<Walk>.Success(walk);
 
-            if (failure is not null)
-            {
-                yield return StorageResult<StoredObject>.Failure(failure);
+        await walk.DisposeAsync().ConfigureAwait(false);
 
-                yield break;
-            }
+        return StorageResult<Walk>.Failure(failure);
+    }
 
-            if (item is null)
-                yield break;
-
-            if (!item.IsDir)
-                yield return StorageResult<StoredObject>.Success(Describe(bucket, item));
-        }
+    /// <summary>
+    /// Tells the breaker about a failure met outside the funnel.
+    /// </summary>
+    /// <param name="failure">The failure met.</param>
+    private void Noticed(StorageError failure)
+    {
+        if (IsWorthRetrying(failure))
+            _breaker.Failed(Settings);
+        else
+            _breaker.Answered();
     }
 
     /// <inheritdoc />
@@ -437,6 +496,11 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             cancellationToken);
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Asking first and creating second is a race between callers, and the loser is answered 409 for a bucket
+    /// that is exactly what it asked for. So a refused creation asks once more, and a bucket that is there by
+    /// then is the success the contract promises; eight replicas provisioning at start-up used to fail seven times.
+    /// </remarks>
     public async Task<StorageResult> CreateAsync(string bucket, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
@@ -454,6 +518,14 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
                 new MakeBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
             () => true,
             cancellationToken).ConfigureAwait(false);
+
+        if (created.IsSuccess)
+            return StorageResult.Success();
+
+        var raced = await ExistsAsync(bucket, cancellationToken).ConfigureAwait(false);
+
+        if (raced.TryGetValue(out var thereNow) && thereNow)
+            return StorageResult.Success();
 
         return Answer("bucket.create", bucket, created, activity);
     }
@@ -768,7 +840,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <returns>What was read, or why it could not be.</returns>
     /// <remarks>
     /// A destination that can seek is rewound to where it started before a retry and after a failure, so a
-    /// partly written file is never left behind for a caller who was told the read failed.
+    /// partly written file is never left behind for a caller who was told the read failed. It is cut back to
+    /// the length it had, never shorter: a stream positioned inside a file it already holds — parallel ranged
+    /// reads into one preallocated file — used to lose everything after the position on a failure.
     /// </remarks>
     private async Task<StorageResult<StoredObject>> DownloadAsync(
         string bucket,
@@ -783,21 +857,22 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var operation = range is null ? "download" : "download.range";
         var start = destination.CanSeek ? destination.Position : -1;
+        var length = destination.CanSeek ? destination.Length : -1;
 
         using var activity = Start(operation, bucket, name);
 
         var copied = await RetryAsync(
             operation,
             (Storage: this, Bucket: bucket, Name: name, Destination: destination, Range: range, Start: start,
-                CancellationToken: cancellationToken),
+                Length: length, CancellationToken: cancellationToken),
             static copy => copy.Storage.CopyOnceAsync(copy.Bucket, copy.Name, copy.Destination, copy.Range, copy.CancellationToken),
-            static copy => TryRewind(copy.Destination, copy.Start),
+            static copy => TryRewind(copy.Destination, copy.Start, copy.Length),
             cancellationToken).ConfigureAwait(false);
 
         if (copied.IsSuccess)
             return copied;
 
-        TryRewind(destination, start);
+        TryRewind(destination, start, length);
 
         return Failed<StoredObject>(operation, bucket, name, copied.Error!, activity);
     }
@@ -851,8 +926,10 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <returns>The answered response, whose body is still unread, or why the server refused.</returns>
     /// <remarks>
-    /// Only the response headers are awaited here. The body streams afterwards under the caller's token,
-    /// so <see cref="MinioOptions.Timeout"/> bounds the request rather than the size of the object.
+    /// Only the response headers are awaited here. The body of an object streams afterwards under the caller's
+    /// token, so <see cref="MinioOptions.Timeout"/> bounds the request rather than the size of the object. The
+    /// body of a failure is part of the request and is read under the same deadline: a server that answered a
+    /// 503 and then stalled held a caller without a token of its own forever.
     /// </remarks>
     private async Task<StorageResult<HttpResponseMessage>> OpenAsync(
         string bucket,
@@ -894,8 +971,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
             using (response)
             {
-                return StorageResult<HttpResponseMessage>.Failure(
-                    await MinioErrors.FromAsync(response, cancellationToken).ConfigureAwait(false));
+                var failure = await MinioErrors.FromAsync(response, deadline.Token).ConfigureAwait(false);
+
+                return StorageResult<HttpResponseMessage>.Failure(failure);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -923,6 +1001,12 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <param name="options">What to list, and how much of it.</param>
     /// <param name="cancellationToken">Cancels the listing.</param>
     /// <returns>The page, or why the bucket could not be listed.</returns>
+    /// <remarks>
+    /// The cursor is a place in the order, not an object: everything up to and including its name is skipped.
+    /// Skipping until the name itself was seen ended the listing on an empty page once the cursor object had
+    /// been deleted between two pages, which is what a workload that lists and removes does. S3 orders keys by
+    /// their UTF-8 bytes, and ordinal order agrees with it for everything but surrogate pairs.
+    /// </remarks>
     private async Task<StorageResult<ObjectPage>> PageAsync(
         string bucket,
         ListOptions options,
@@ -942,9 +1026,10 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             {
                 if (skipping)
                 {
-                    skipping = !string.Equals(item.Key, options.Cursor, StringComparison.Ordinal);
+                    skipping = string.CompareOrdinal(item.Key, options.Cursor) <= 0;
 
-                    continue;
+                    if (skipping)
+                        continue;
                 }
 
                 if (item.IsDir)
@@ -1085,7 +1170,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <returns>The first successful outcome, or the last failure.</returns>
     /// <remarks>
     /// Every call the adapter makes goes through here, including the ones that are never retried, because
-    /// this is also where the circuit breaker decides whether the server is worth asking at all.
+    /// this is also where the circuit breaker decides whether the server is worth asking at all. Every attempt
+    /// tells the breaker how it ended — answered, failed, or abandoned by an exception — because a probe it
+    /// never heard back from kept the gate shut for good.
     /// </remarks>
     private Task<StorageResult<T>> RetryAsync<T>(
         string operation,
@@ -1136,7 +1223,18 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         for (var attempted = 0; ; attempted++)
         {
-            var result = await attempt(state).ConfigureAwait(false);
+            StorageResult<T> result;
+
+            try
+            {
+                result = await attempt(state).ConfigureAwait(false);
+            }
+            catch
+            {
+                _breaker.Abandoned();
+
+                throw;
+            }
 
             if (result.IsSuccess)
             {
@@ -1149,6 +1247,8 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
             if (worthRetrying)
                 _breaker.Failed(settings);
+            else
+                _breaker.Answered();
 
             if (attempted >= settings.RetryAttempts || !worthRetrying || !prepare(state))
                 return result;
@@ -1227,20 +1327,25 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     }
 
     /// <summary>
-    /// Returns a destination to where the read started.
+    /// Returns a destination to where the read started, and to the length it had.
     /// </summary>
     /// <param name="destination">The stream to rewind.</param>
     /// <param name="start">The position the read began at, or -1 when the stream cannot seek.</param>
+    /// <param name="length">The length the stream had, or -1 when it cannot seek.</param>
     /// <returns><see langword="true"/> when the stream is back where it started.</returns>
-    private static bool TryRewind(Stream destination, long start)
+    /// <remarks>
+    /// Only what the read appended is cut off. Bytes it overwrote inside the length the stream already had
+    /// cannot be brought back, and are not pretended to be.
+    /// </remarks>
+    private static bool TryRewind(Stream destination, long start, long length)
     {
         if (start < 0 || !destination.CanSeek)
             return false;
 
         destination.Position = start;
 
-        if (destination.Length > start)
-            destination.SetLength(start);
+        if (destination.Length > length)
+            destination.SetLength(length);
 
         return true;
     }
@@ -1468,9 +1573,30 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         Size = stat.Size,
         MediaType = string.IsNullOrWhiteSpace(stat.ContentType) ? MediaTypes.Default : stat.ContentType,
         ETag = stat.ETag,
-        LastModified = stat.LastModified,
+        LastModified = LocalMoment(stat.LastModified),
         Metadata = UserMetadata(stat.MetaData)
     };
+
+    /// <summary>
+    /// Reads the moment a stat reported on the clock the SDK read it with.
+    /// </summary>
+    /// <param name="reported">What the SDK parsed, or the first day of year one when the answer named no moment.</param>
+    /// <returns>The moment on the local clock, or the first day of year one on UTC where the local clock cannot show it.</returns>
+    /// <remarks>
+    /// An answer without <c>Last-Modified</c> leaves the SDK's moment at its default. Taken on a clock east of UTC,
+    /// that moment falls before year one and the conversion raises out of a stat that succeeded; there it reads as
+    /// the same day on UTC, which is what a clock on UTC already shows and what any clock west of it shows on its own.
+    /// Only the first day is asked about the local offset, so a stat that names its moment pays nothing more.
+    /// </remarks>
+    private static DateTimeOffset LocalMoment(DateTime reported)
+    {
+        var isFirstDay = reported.Kind != DateTimeKind.Utc && reported.Ticks < TimeSpan.TicksPerDay;
+
+        if (isFirstDay && reported - DateTime.MinValue < TimeZoneInfo.Local.GetUtcOffset(reported))
+            return DateTimeOffset.MinValue;
+
+        return reported;
+    }
 
     /// <summary>
     /// Keeps the metadata a caller wrote and drops what the protocol added.
@@ -1651,6 +1777,44 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         }
 
         return kept;
+    }
+
+    /// <summary>
+    /// A listing being walked, one entry at a time, with its failures answered as data.
+    /// </summary>
+    /// <param name="items">The entries the SDK yields.</param>
+    private sealed class Walk(IAsyncEnumerator<Item> items) : IAsyncDisposable
+    {
+        /// <summary>Gets the entry the walk stands on, or <see langword="null"/> once it has ended.</summary>
+        public Item? Current { get; private set; }
+
+        /// <summary>
+        /// Moves to the next entry.
+        /// </summary>
+        /// <param name="cancellationToken">The caller's token, whose cancellation is rethrown rather than answered.</param>
+        /// <returns><see langword="null"/> when the walk moved on or ended, or why it could not.</returns>
+        public async ValueTask<StorageError?> AdvanceAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                Current = await items.MoveNextAsync().ConfigureAwait(false) ? items.Current : null;
+
+                return null;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                Current = null;
+
+                return MinioErrors.From(exception);
+            }
+        }
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync() => items.DisposeAsync();
     }
 
     /// <summary>

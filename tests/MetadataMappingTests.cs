@@ -7,6 +7,7 @@ using Minio.DataModel;
 using Minio.DataModel.Args;
 using Minio.DataModel.Response;
 using Snail.Toolkit.Minio.Adapters;
+using Snail.Toolkit.Minio.Domain;
 
 namespace Snail.Toolkit.Minio.Tests;
 
@@ -67,6 +68,27 @@ public class MetadataMappingTests
         Assert.Equal("avatar, small", metadata["PURPOSE"]);
     }
 
+    /// <summary>
+    /// A stat whose answer names no Last-Modified reads as the first day of year one, on the local clock wherever
+    /// that clock can show it and on UTC east of it, rather than raising.
+    /// </summary>
+    /// <remarks>Raised east of UTC before: run the suite with <c>TZ=Asia/Tokyo</c> to see it.</remarks>
+    [Fact]
+    public async Task Stat_NoLastModified_ReadsAsYearOne()
+    {
+        var headers = Headers
+            .Where(header => !string.Equals(header.Key, "Last-Modified", StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(StringComparer.OrdinalIgnoreCase);
+        var storage = Storage(Answers.Stat(ObjectStat.FromResponseHeaders("a.png", headers)));
+        var localOffset = TimeZoneInfo.Local.GetUtcOffset(DateTime.MinValue);
+
+        var stat = await storage.StatAsync("bucket", "a.png");
+
+        Assert.True(stat.IsSuccess);
+        Assert.Equal(DateTime.MinValue, stat.Value.LastModified!.Value.DateTime);
+        Assert.Equal(localOffset > TimeSpan.Zero ? TimeSpan.Zero : localOffset, stat.Value.LastModified.Value.Offset);
+    }
+
     [Fact]
     public async Task Get_HeadersOfAnObject_KeepsTheUsersOnly()
     {
@@ -120,15 +142,19 @@ public class MetadataMappingTests
         }
     }
 
-    /// <summary>Two names that differ only in case cannot both be kept, and the upload says so as it did.</summary>
+    /// <summary>Two names that differ only in case cannot both be kept, and the upload says so before it is sent.</summary>
     [Fact]
-    public async Task Put_NamesDifferingInCase_RefusedAsBefore()
+    public async Task Put_NamesDifferingInCase_RefusedBeforeItIsSent()
     {
-        var storage = Storage(Answers.Uploads());
+        var client = Answers.Uploads();
+        var storage = Storage(client);
         using var content = new MemoryStream(new byte[4]);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => storage.PutAsync(
-            "bucket", content, new() { Name = "a.png", Metadata = new Dictionary<string, string> { ["Owner"] = "a", ["owner"] = "b" } }));
+        var refused = await storage.PutAsync(
+            "bucket", content, new() { Name = "a.png", Metadata = new Dictionary<string, string> { ["Owner"] = "a", ["owner"] = "b" } });
+
+        Assert.Equal(StorageErrorKind.InvalidArgument, refused.Error?.Kind);
+        Assert.Null(((Answers)(object)client).Uploaded);
     }
 
     [Fact]
@@ -255,14 +281,16 @@ public class MetadataMappingTests
             written[$"NAME{count - 1}"] = "again";
             content.Position = 0;
 
-            await Assert.ThrowsAsync<ArgumentException>(() => storage.PutAsync(
-                "bucket", content, new() { Name = "a.png", Metadata = written }));
+            var refused = await storage.PutAsync("bucket", content, new() { Name = "a.png", Metadata = written });
+
+            Assert.Equal(StorageErrorKind.InvalidArgument, refused.Error?.Kind);
         }
     }
 
     /// <summary>
     /// The request an upload hands the SDK carries the headers and media type it carried when each name was added
-    /// on its own: the same names in the same order, whatever kind of dictionary the caller wrote them in.
+    /// on its own: the same names in the same order, whatever kind of dictionary the caller wrote them in. Two
+    /// names differing only in case are refused before anything is sent.
     /// </summary>
     [Fact]
     public async Task Put_Metadata_HandsTheSdkTheSameRequest()
@@ -287,12 +315,15 @@ public class MetadataMappingTests
                 var storage = Storage(client);
                 using var content = new MemoryStream(new byte[4]);
 
-                var upload = storage.PutAsync("bucket", content, new() { Name = "a.png", MediaType = mediaType, Metadata = metadata });
+                var upload = await storage.PutAsync("bucket", content, new() { Name = "a.png", MediaType = mediaType, Metadata = metadata });
 
-                if (metadata.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() == metadata.Count)
-                    await upload;
-                else
-                    await Assert.ThrowsAsync<ArgumentException>(() => upload);
+                if (metadata.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != metadata.Count)
+                {
+                    Assert.Equal(StorageErrorKind.InvalidArgument, upload.Error?.Kind);
+                    Assert.Null(((Answers)(object)client).Uploaded);
+
+                    continue;
+                }
 
                 var expected = new PutObjectArgs().WithBucket("bucket").WithObject("a.png").WithContentType(mediaType ?? "image/png");
 
