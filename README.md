@@ -126,7 +126,8 @@ await storage.DownloadRangeToAsync("videos", "clip.mp4", response.Body, offset: 
 ```
 
 Offsets are 64-bit, so ranges past 2 GB work. If the copy fails half way, a seekable destination is rewound
-— you never get a half-written file that claims to have failed.
+and cut back to the length it had, never shorter — you never get a half-written file that claims to have
+failed, and a read into the middle of a file you preallocated leaves the rest of it alone.
 
 ### Copy into a file, a buffer, anything writable
 
@@ -201,7 +202,8 @@ await foreach (var item in storage.EnumerateAsync("reports", cancellationToken: 
 ```
 
 Use this rather than paging through a large bucket: resuming from a cursor costs a walk to that point,
-because the SDK offers no way to start a listing after a given name.
+because the SDK offers no way to start a listing after a given name. A cursor is a place in the order, so a
+page resumes correctly even when the object it named has been deleted in between.
 
 A listing asks for each object's metadata, which MinIO serves and AWS S3 does not: against any other S3
 server, set `CanListUserMetadata` to `false`, or every listing fails. Listed objects then carry no metadata
@@ -244,7 +246,8 @@ public sealed class Provisioning(IBuckets buckets)
 }
 ```
 
-Creating one that exists succeeds. Removing one that still holds objects does not.
+Creating one that exists succeeds, even when another process created it a moment earlier. Removing one that
+still holds objects does not.
 
 ### Let a bucket clean up after itself
 
@@ -353,14 +356,15 @@ Settings are validated when the host starts, not when the first request runs.
 
 ## What happens without you asking
 
-**Retries.** Reads and deletes are retried when the connection is lost, the request times out, or the
-server answers 408, 429 or 5xx. Uploads are never retried: the stream may already be partly consumed.
+**Retries.** Reads, listings, walks and deletes are retried when the connection is lost, the request times
+out, or the server answers 408, 429 or 5xx. Uploads are never retried: the stream may already be partly consumed.
 `Retry-After` wins over the schedule, and a server asking for longer than thirty seconds is believed — the
 call returns immediately, carrying the wait it asked for.
 
 **A circuit breaker.** After `CircuitBreakFailures` such failures in a row, calls stop going out for
 `CircuitBreakDuration`, then one is let through to see whether anything changed. A missing object is not
-counted: that is an answer, not the server's health.
+counted: that is an answer, not the server's health, and when the one call let through gets such an answer,
+the traffic comes back.
 
 **Tracing and logs.** Every operation opens an activity on the source `Snail.Toolkit.Minio`, tagged with
 the bucket, the object and the configuration:
@@ -376,6 +380,9 @@ Real failures log at warning, ordinary ones — a missing object — at debug. N
 through the SDK's read path. Two measured reasons: MinIO's client turns every HTTP 206 answer into an
 exception, so ranged reads are impossible through it, and its read path buffers a whole object before you
 see a byte.
+
+Signing a read is left to the SDK and is most of what a read costs in process: about 15 µs and 27 KB per read in
+the benchmarks, against about 1.2 µs and 2.8 KB for everything else the library does with it.
 
 ---
 
@@ -396,6 +403,24 @@ public sealed class Tags(IMinioClient client)
 
 **This layer has no retries and no circuit breaker** — they live in the adapter. A call made here goes to
 the server once. Code that wants the resilience takes `IObjectStorage`.
+
+---
+
+## Not for Native AOT
+
+The library runs under the JIT only, and says so: it does not declare itself trim- or AOT-compatible.
+Two reasons, neither in its own code.
+
+**The MinIO client.** Minio 7.0.0 reads the server's XML answers with `XmlSerializer` and reads headers
+through reflection. Publishing an app with Native AOT warns 17 times inside `Minio.dll` (IL2026, IL3050,
+IL2075), and the warnings are real: a bucket's lifecycle read in a native app comes back with no rules,
+reported as a success, where the JIT reads the rule that is there.
+
+**The settings.** A native app binds configuration through the binding source generator, which does not
+bind `init` properties — it fills an instance that already exists, where an `init` setter cannot be called,
+and says nothing. Every setting of `MinioOptions` is `init`, so `AddMinio` would bind nothing and fail at
+start with `'Minio:Endpoint' is missing`. Making them `set` would break every caller compiled against them,
+a change for a major version. Settings are bound by reflection, as they always were.
 
 ---
 
