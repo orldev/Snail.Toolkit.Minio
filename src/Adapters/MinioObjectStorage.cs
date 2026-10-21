@@ -1,12 +1,8 @@
-using System.Buffers;
-using System.Collections.Frozen;
-using System.Text;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Minio.DataModel;
 using Minio.DataModel.Args;
 using Minio.DataModel.ILM;
 using Snail.Toolkit.Minio.Domain;
@@ -50,32 +46,12 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
     private static readonly ActivitySource Source = new(ActivitySourceName);
 
-    /// <summary>The longest this adapter waits between attempts, however the settings are written.</summary>
-    private static readonly TimeSpan MaximumBackoff = TimeSpan.FromSeconds(30);
-
-    /// <summary>What the wire puts in front of a user's own metadata names.</summary>
-    private const string MetadataPrefix = "x-amz-meta-";
-
-    /// <summary>The code a server answers with when a bucket expires nothing.</summary>
-    private const string NoLifecycleConfiguration = "NoSuchLifecycleConfiguration";
-
-    /// <summary>The characters RFC 7230 allows in a header name, a token.</summary>
-    private static readonly SearchValues<char> HeaderNameCharacters =
-        SearchValues.Create("!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
-
-    /// <summary>The names a server reports as metadata that no caller ever stored.</summary>
-    private static readonly HashSet<string> ProtocolNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Content-Type", "Content-Length", "Content-Encoding", "Content-Disposition", "Content-Language",
-        "Cache-Control", "Expires", "ETag", "Last-Modified", "Accept-Ranges", "Date", "Server", "Connection"
-    };
-
     private readonly string _name;
     private readonly IMinioClient _client;
     private readonly HttpClient _http;
     private readonly IOptionsMonitor<MinioOptions> _options;
     private readonly ILogger _logger;
-    private readonly CircuitBreaker _breaker = new();
+    private readonly Retrying _retrying;
 
     private bool _disposed;
 
@@ -105,6 +81,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         _http = http;
         _options = options;
         _logger = logger;
+        _retrying = new Retrying(name, options, logger);
     }
 
     private MinioOptions Settings => _options.Get(_name);
@@ -125,28 +102,28 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         var mediaType = options.MediaType ?? MediaTypes.MediaTypeFor(name);
 
         if (options.AppendExtension)
-            name = WithExtension(name, mediaType);
+            name = UploadRules.WithExtension(name, mediaType);
 
-        if (!TryResolveSize(content, options.Size, out var size, out var sizeFault))
+        if (!UploadRules.TryResolveSize(content, options.Size, out var size, out var sizeFault))
             return StorageResult<StoredObject>.Failure(sizeFault);
 
-        if (Fault(options.Metadata) is { } metadataFault)
+        if (UploadRules.Fault(options.Metadata) is { } metadataFault)
             return StorageResult<StoredObject>.Failure(metadataFault);
 
-        if (Written(options.Metadata) is not { } written)
+        if (UploadRules.Written(options.Metadata) is not { } written)
             return StorageResult<StoredObject>.Failure(new StorageError(
                 StorageErrorKind.InvalidArgument,
                 "Two metadata names differ only in case, and a header name has no case."));
 
         using var activity = Start("put", bucket, name);
 
-        var response = await RetryAsync(
+        var response = await _retrying.RetryAsync(
             "put",
             (Client: _client, Bucket: bucket, Name: name, MediaType: mediaType, Content: content, Size: size,
                 options.Metadata, CancellationToken: cancellationToken),
             static upload => MinioClientExtensions.ExecuteAsync(
                 static upload => upload.Client.PutObjectAsync(
-                    Describe(new PutObjectArgs()
+                    UploadRules.Describe(new PutObjectArgs()
                         .WithBucket(upload.Bucket)
                         .WithObject(upload.Name)
                         .WithContentType(upload.MediaType)
@@ -172,56 +149,6 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         });
     }
 
-    /// <summary>
-    /// The metadata an upload will store, as the caller will read it back: names in any case.
-    /// </summary>
-    /// <param name="metadata">What the caller gave.</param>
-    /// <returns>
-    /// A copy nobody can write through, the shared empty one, or <see langword="null"/> when two names differ
-    /// only in case.
-    /// </returns>
-    /// <remarks>
-    /// Copied, not frozen: a handful of names is looked up a few times at most, and freezing costs more than
-    /// those lookups save. Made before the upload, because it is also where two names that differ only in case
-    /// are found: finding them after the upload threw out of a call whose object was already stored.
-    /// </remarks>
-    private static IReadOnlyDictionary<string, string>? Written(IReadOnlyDictionary<string, string>? metadata)
-    {
-        if (metadata is null || metadata.Count == 0)
-            return FrozenDictionary<string, string>.Empty;
-
-        if (metadata.Count <= ObjectMetadata.MostNames)
-            return Kept(metadata);
-
-        var copy = new Dictionary<string, string>(metadata.Count, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var (key, value) in metadata)
-        {
-            if (!copy.TryAdd(key, value))
-                return null;
-        }
-
-        return copy.AsReadOnly();
-    }
-
-    /// <summary>
-    /// Copies an upload's few names, each once in any case.
-    /// </summary>
-    /// <param name="metadata">What the caller gave.</param>
-    /// <returns>The copy, or <see langword="null"/> when two names differ only in case.</returns>
-    private static ObjectMetadata? Kept(IReadOnlyDictionary<string, string> metadata)
-    {
-        var kept = new ObjectMetadata(metadata.Count);
-
-        foreach (var (key, value) in metadata)
-        {
-            if (!kept.TryAdd(key, value))
-                return null;
-        }
-
-        return kept;
-    }
-
     /// <inheritdoc />
     public async Task<StorageResult<ObjectContent>> GetAsync(
         string bucket,
@@ -233,7 +160,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("get", bucket, name);
 
-        var opened = await RetryAsync(
+        var opened = await _retrying.RetryAsync(
             "get",
             (Storage: this, Bucket: bucket, Name: name, CancellationToken: cancellationToken),
             static read => read.Storage.OpenAsync(read.Bucket, read.Name, range: null, read.CancellationToken),
@@ -248,7 +175,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
             return StorageResult<ObjectContent>.Success(
-                new ObjectContent(Describe(bucket, name, response), new ResponseStream(stream, response)));
+                new ObjectContent(ObjectDescriptions.Describe(bucket, name, response), new ResponseStream(stream, response)));
         }
         catch
         {
@@ -303,7 +230,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("stat", bucket, name);
 
-        var stat = await RetryAsync(
+        var stat = await _retrying.RetryAsync(
             "stat",
             (Client: _client, Bucket: bucket, Name: name, CancellationToken: cancellationToken),
             static stat => MinioClientExtensions.ExecuteAsync(
@@ -318,7 +245,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         if (!stat.TryGetValue(out var described))
             return Failed<StoredObject>("stat", bucket, name, stat.Error!, activity);
 
-        return StorageResult<StoredObject>.Success(Describe(bucket, name, described));
+        return StorageResult<StoredObject>.Success(ObjectDescriptions.Describe(bucket, name, described));
     }
 
     /// <inheritdoc />
@@ -354,7 +281,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("list", bucket, options.Prefix ?? string.Empty);
 
-        var page = await RetryAsync(
+        var page = await _retrying.RetryAsync(
             "list",
             () => PageAsync(bucket, options, cancellationToken),
             () => true,
@@ -385,7 +312,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("walk", bucket, prefix);
 
-        var opened = await RetryAsync(
+        var opened = await _retrying.RetryAsync(
             "walk",
             (Storage: this, Bucket: bucket, Options: options, CancellationToken: cancellationToken),
             static walk => walk.Storage.OpenWalkAsync(walk.Bucket, walk.Options, walk.CancellationToken),
@@ -404,14 +331,14 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             while (walk.Current is { } item)
             {
                 if (!item.IsDir)
-                    yield return StorageResult<StoredObject>.Success(Describe(bucket, item));
+                    yield return StorageResult<StoredObject>.Success(ObjectDescriptions.Describe(bucket, item));
 
                 var failure = await walk.AdvanceAsync(cancellationToken).ConfigureAwait(false);
 
                 if (failure is null)
                     continue;
 
-                Noticed(failure);
+                _retrying.Noticed(failure);
 
                 yield return Failed<StoredObject>("walk", bucket, prefix, failure, activity);
 
@@ -449,18 +376,6 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         await walk.DisposeAsync().ConfigureAwait(false);
 
         return StorageResult<Walk>.Failure(failure);
-    }
-
-    /// <summary>
-    /// Tells the breaker about a failure met outside the funnel.
-    /// </summary>
-    /// <param name="failure">The failure met.</param>
-    private void Noticed(StorageError failure)
-    {
-        if (IsWorthRetrying(failure))
-            _breaker.Failed(Settings);
-        else
-            _breaker.Answered();
     }
 
     /// <inheritdoc />
@@ -512,7 +427,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("bucket.create", bucket, string.Empty);
 
-        var created = await RetryAsync(
+        var created = await _retrying.RetryAsync(
             "bucket.create",
             () => ValuelessAsync(() => _client.MakeBucketAsync(
                 new MakeBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
@@ -537,7 +452,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("bucket.remove", bucket, string.Empty);
 
-        var removed = await RetryAsync(
+        var removed = await _retrying.RetryAsync(
             "bucket.remove",
             () => ValuelessAsync(() => _client.RemoveBucketAsync(
                 new RemoveBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
@@ -554,7 +469,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("bucket.exists", bucket, string.Empty);
 
-        var exists = await RetryAsync(
+        var exists = await _retrying.RetryAsync(
             "bucket.exists",
             () => MinioClientExtensions.ExecuteAsync(
                 async () => await _client
@@ -580,7 +495,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("remove", bucket, name);
 
-        var removed = await RetryAsync(
+        var removed = await _retrying.RetryAsync(
             "remove",
             async () =>
             {
@@ -618,7 +533,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("copy", targetBucket, targetName);
 
-        var copied = await RetryAsync(
+        var copied = await _retrying.RetryAsync(
             "copy",
             () => ValuelessAsync(
                 () => _client.CopyObjectAsync(
@@ -656,7 +571,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
         ArgumentNullException.ThrowIfNull(rules);
 
-        if (Fault(rules) is { } fault)
+        if (ExpiryRules.Fault(rules) is { } fault)
             return StorageResult.Failure(fault);
 
         var exists = await ExistsAsync(bucket, cancellationToken).ConfigureAwait(false);
@@ -671,7 +586,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("bucket.expiry.set", bucket, string.Empty);
 
-        var written = await RetryAsync(
+        var written = await _retrying.RetryAsync(
             "bucket.expiry.set",
             () => ValuelessAsync(() => Write(bucket, rules, cancellationToken), cancellationToken),
             () => true,
@@ -689,7 +604,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start("bucket.expiry.get", bucket, string.Empty);
 
-        var read = await RetryAsync(
+        var read = await _retrying.RetryAsync(
             "bucket.expiry.get",
             () => MinioClientExtensions.ExecuteAsync(
                 async () => await _client
@@ -700,9 +615,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             cancellationToken).ConfigureAwait(false);
 
         if (read.TryGetValue(out var configuration))
-            return StorageResult<IReadOnlyList<ExpiryRule>>.Success(Expiries(configuration));
+            return StorageResult<IReadOnlyList<ExpiryRule>>.Success(ExpiryRules.Expiries(configuration));
 
-        if (IsUnset(read.Error))
+        if (ExpiryRules.IsUnset(read.Error))
             return StorageResult<IReadOnlyList<ExpiryRule>>.Success([]);
 
         return Failed<IReadOnlyList<ExpiryRule>>("bucket.expiry.get", bucket, string.Empty, read.Error, activity);
@@ -726,94 +641,8 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             : _client.SetBucketLifecycleAsync(
                 new SetBucketLifecycleArgs()
                     .WithBucket(bucket)
-                    .WithLifecycleConfiguration(new LifecycleConfiguration([.. rules.Select(Rule)])),
+                    .WithLifecycleConfiguration(new LifecycleConfiguration([.. rules.Select(ExpiryRules.Rule)])),
                 cancellationToken);
-
-    /// <summary>
-    /// Turns one rule into what the SDK sends.
-    /// </summary>
-    /// <param name="rule">The rule to send.</param>
-    /// <returns>The same rule in the SDK's shape.</returns>
-    private static LifecycleRule Rule(ExpiryRule rule) => new(
-        null,
-        rule.Id,
-        new Expiration { Days = rule.Days },
-        null,
-        new RuleFilter(null, rule.Prefix, null),
-        null,
-        null,
-        rule.IsEnabled ? LifecycleRule.LifecycleRuleStatusEnabled : LifecycleRule.LifecycleRuleStatusDisabled);
-
-    /// <summary>
-    /// Reads back the rules this library models, and no others.
-    /// </summary>
-    /// <param name="configuration">Everything the bucket carries.</param>
-    /// <returns>The rules that expire objects after a number of days.</returns>
-    /// <remarks>
-    /// A bucket may also carry transitions, versioning rules and upload cleanups, which this library does
-    /// not model. Reporting them as expiries would say an object dies on a day it does not.
-    /// </remarks>
-    private static IReadOnlyList<ExpiryRule> Expiries(LifecycleConfiguration configuration)
-        => configuration.Rules is not { Count: > 0 } rules
-            ? []
-            : [.. rules
-                .Where(rule => rule.Expiration?.Days is > 0)
-                .Select(rule => new ExpiryRule
-                {
-                    Id = rule.ID ?? string.Empty,
-                    Days = (int)rule.Expiration!.Days!.Value,
-                    Prefix = rule.Filter?.Prefix ?? string.Empty,
-                    IsEnabled = string.Equals(
-                        rule.Status,
-                        LifecycleRule.LifecycleRuleStatusEnabled,
-                        StringComparison.OrdinalIgnoreCase)
-                })];
-
-    /// <summary>
-    /// Decides whether a failure is the server saying the bucket expires nothing.
-    /// </summary>
-    /// <param name="error">The failure to judge.</param>
-    /// <returns><see langword="true"/> when there is no configuration rather than no answer.</returns>
-    /// <remarks>
-    /// A bucket with no rules is a state, not a fault, and the protocol reports it as one: the request is
-    /// refused with <c>NoSuchLifecycleConfiguration</c>. Handing that back as a failure would make every
-    /// caller translate the same code before it could act on the answer. Judged by the code rather than by
-    /// the message, which the server is free to reword.
-    /// </remarks>
-    private static bool IsUnset(StorageError? error)
-        => string.Equals(error?.Code, NoLifecycleConfiguration, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Finds the first thing wrong with a set of rules.
-    /// </summary>
-    /// <param name="rules">The rules to judge.</param>
-    /// <returns>What is wrong, or <see langword="null"/> when they can be sent.</returns>
-    /// <remarks>
-    /// Checked here rather than at the server because the server's refusal names neither the rule nor the
-    /// field, and a caller reading it cannot tell which of its rules was the bad one.
-    /// </remarks>
-    private static StorageError? Fault(IReadOnlyList<ExpiryRule> rules)
-    {
-        HashSet<string> seen = new(StringComparer.Ordinal);
-
-        foreach (var rule in rules)
-        {
-            if (string.IsNullOrWhiteSpace(rule.Id))
-                return new StorageError(StorageErrorKind.InvalidArgument, "A rule has to be named.");
-
-            if (!seen.Add(rule.Id))
-                return new StorageError(
-                    StorageErrorKind.InvalidArgument,
-                    $"The rule '{rule.Id}' is named twice, and the second would replace the first.");
-
-            if (rule.Days <= 0)
-                return new StorageError(
-                    StorageErrorKind.InvalidArgument,
-                    $"The rule '{rule.Id}' expires after {rule.Days} days, which is not a life.");
-        }
-
-        return null;
-    }
 
     /// <inheritdoc />
     /// <remarks>
@@ -861,7 +690,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         using var activity = Start(operation, bucket, name);
 
-        var copied = await RetryAsync(
+        var copied = await _retrying.RetryAsync(
             operation,
             (Storage: this, Bucket: bucket, Name: name, Destination: destination, Range: range, Start: start,
                 Length: length, CancellationToken: cancellationToken),
@@ -913,7 +742,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
                 return StorageResult<StoredObject>.Failure(MinioErrors.From(exception));
             }
 
-            return StorageResult<StoredObject>.Success(Describe(bucket, name, response));
+            return StorageResult<StoredObject>.Success(ObjectDescriptions.Describe(bucket, name, response));
         }
     }
 
@@ -1046,7 +875,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
                     break;
                 }
 
-                objects.Add(Describe(bucket, item));
+                objects.Add(ObjectDescriptions.Describe(bucket, item));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1160,173 +989,6 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     }
 
     /// <summary>
-    /// Repeats an operation while it fails for a reason that may not repeat.
-    /// </summary>
-    /// <typeparam name="T">What the operation produces.</typeparam>
-    /// <param name="operation">The name to report under.</param>
-    /// <param name="attempt">The work to repeat.</param>
-    /// <param name="prepare">Puts the world back where the next attempt can start; false stops retrying.</param>
-    /// <param name="cancellationToken">Cancels the wait between attempts.</param>
-    /// <returns>The first successful outcome, or the last failure.</returns>
-    /// <remarks>
-    /// Every call the adapter makes goes through here, including the ones that are never retried, because
-    /// this is also where the circuit breaker decides whether the server is worth asking at all. Every attempt
-    /// tells the breaker how it ended — answered, failed, or abandoned by an exception — because a probe it
-    /// never heard back from kept the gate shut for good.
-    /// </remarks>
-    private Task<StorageResult<T>> RetryAsync<T>(
-        string operation,
-        Func<Task<StorageResult<T>>> attempt,
-        Func<bool> prepare,
-        CancellationToken cancellationToken)
-        where T : notnull
-        => RetryAsync(
-            operation,
-            (Attempt: attempt, Prepare: prepare),
-            static retry => retry.Attempt(),
-            static retry => retry.Prepare(),
-            cancellationToken);
-
-    /// <summary>
-    /// Repeats an operation on what it was handed while it fails for a reason that may not repeat.
-    /// </summary>
-    /// <typeparam name="TState">What every attempt is made with.</typeparam>
-    /// <typeparam name="T">What the operation produces.</typeparam>
-    /// <param name="operation">The name to report under.</param>
-    /// <param name="state">What every attempt is made with.</param>
-    /// <param name="attempt">The work to repeat, capturing nothing.</param>
-    /// <param name="prepare">Puts the world back where the next attempt can start; false stops retrying.</param>
-    /// <param name="cancellationToken">Cancels the wait between attempts.</param>
-    /// <returns>The first successful outcome, or the last failure.</returns>
-    /// <remarks>
-    /// The attempt is handed its state rather than capturing it, so the reads, the stat and the upload cost no
-    /// closure and no delegate per call.
-    /// </remarks>
-    private async Task<StorageResult<T>> RetryAsync<TState, T>(
-        string operation,
-        TState state,
-        Func<TState, Task<StorageResult<T>>> attempt,
-        Func<TState, bool> prepare,
-        CancellationToken cancellationToken)
-        where T : notnull
-    {
-        var settings = Settings;
-
-        if (!_breaker.TryEnter(settings, out var closedFor))
-            return StorageResult<T>.Failure(new StorageError(
-                StorageErrorKind.Upstream,
-                $"Not attempted: {settings.CircuitBreakFailures} calls in a row failed, "
-                + $"so this configuration is not being used for another {closedFor}.")
-            {
-                RetryAfter = closedFor
-            });
-
-        for (var attempted = 0; ; attempted++)
-        {
-            StorageResult<T> result;
-
-            try
-            {
-                result = await attempt(state).ConfigureAwait(false);
-            }
-            catch
-            {
-                _breaker.Abandoned();
-
-                throw;
-            }
-
-            if (result.IsSuccess)
-            {
-                _breaker.Succeeded();
-
-                return result;
-            }
-
-            var worthRetrying = IsWorthRetrying(result.Error);
-
-            if (worthRetrying)
-                _breaker.Failed(settings);
-            else
-                _breaker.Answered();
-
-            if (attempted >= settings.RetryAttempts || !worthRetrying || !prepare(state))
-                return result;
-
-            if (!TryWait(settings, attempted, result.Error, out var delay))
-                return result;
-
-            Log.Retrying(_logger, operation, result.Error.Kind, delay, result.Error.Message);
-
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Works out whether to wait, and for how long.
-    /// </summary>
-    /// <param name="settings">The settings the wait grows from.</param>
-    /// <param name="attempted">How many attempts have already failed.</param>
-    /// <param name="error">The failure that would be retried.</param>
-    /// <param name="delay">How long to wait before the next attempt.</param>
-    /// <returns><see langword="false"/> when the server asked for longer than is worth waiting.</returns>
-    /// <remarks>
-    /// A server that answers <c>Retry-After: 300</c> is saying it will not be ready inside any request's
-    /// lifetime. Waiting that long inside a call nobody can see is worse than answering now and letting the
-    /// caller decide.
-    /// </remarks>
-    private static bool TryWait(MinioOptions settings, int attempted, StorageError error, out TimeSpan delay)
-    {
-        delay = Backoff(settings, attempted);
-
-        if (error.RetryAfter is not { } asked)
-            return true;
-
-        if (asked > MaximumBackoff)
-            return false;
-
-        if (asked > delay)
-            delay = asked;
-
-        return true;
-    }
-
-    /// <summary>
-    /// Decides whether a failure is worth another attempt.
-    /// </summary>
-    /// <param name="error">The failure to judge.</param>
-    /// <returns><see langword="true"/> when the same call may yet succeed.</returns>
-    /// <remarks>
-    /// A lost connection and a timeout, plus the statuses a server sends while it is briefly unable to
-    /// answer. A rolling deployment answers 502 and 503 for a few seconds, and a client that gives up on
-    /// those turns a deployment into an outage. The S3 codes are there because the SDK reports a 503 by
-    /// code and without a status, and the same failure must not depend on which path it arrived by.
-    /// </remarks>
-    private static bool IsWorthRetrying(StorageError error)
-        => error.Kind is StorageErrorKind.Connection or StorageErrorKind.Timeout
-            || error.StatusCode is 408 or 429 or 500 or 502 or 503 or 504
-            || error.Code is "SlowDown" or "InternalError" or "ServiceUnavailable" or "RequestTimeout" or "Busy";
-
-    /// <summary>
-    /// Works out how long to wait before the next attempt.
-    /// </summary>
-    /// <param name="settings">The settings the delay grows from.</param>
-    /// <param name="attempted">How many attempts have already failed.</param>
-    /// <returns>The wait, doubling per attempt and capped.</returns>
-    /// <remarks>
-    /// Capped because the doubling is otherwise unbounded: a generous delay and a generous attempt count
-    /// multiply into a wait longer than the timer accepts, which raises out of a call that promised to
-    /// answer.
-    /// </remarks>
-    private static TimeSpan Backoff(MinioOptions settings, int attempted)
-    {
-        var doublings = Math.Min(attempted, 16);
-        var delay = settings.RetryDelay * Math.Pow(2, doublings);
-
-        return delay < MaximumBackoff ? delay : MaximumBackoff;
-    }
-
-    /// <summary>
     /// Returns a destination to where the read started, and to the length it had.
     /// </summary>
     /// <param name="destination">The stream to rewind.</param>
@@ -1437,466 +1099,5 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         activity?.SetTag("storage.object", name);
 
         return activity;
-    }
-
-    /// <summary>
-    /// Works out how many bytes to upload.
-    /// </summary>
-    /// <param name="content">The stream to upload.</param>
-    /// <param name="stated">The size the caller stated, when it stated one.</param>
-    /// <param name="size">The size to send.</param>
-    /// <param name="fault">Why the size could not be worked out.</param>
-    /// <returns><see langword="true"/> when a size is known.</returns>
-    /// <remarks>
-    /// A stated size wins. Otherwise the stream's own length counts from its current position, so a
-    /// partially read stream uploads what is left of it rather than what it once held.
-    /// </remarks>
-    private static bool TryResolveSize(Stream content, long? stated, out long size, out StorageError fault)
-    {
-        fault = null!;
-
-        if (stated is { } given)
-        {
-            size = given;
-
-            if (given >= 0)
-                return true;
-
-            fault = new StorageError(StorageErrorKind.InvalidArgument, $"The size cannot be negative, was {given}.");
-
-            return false;
-        }
-
-        if (!content.CanSeek)
-        {
-            size = 0;
-            fault = new StorageError(
-                StorageErrorKind.NotSupported,
-                $"The size of a stream that cannot seek has to be stated in '{nameof(UploadOptions.Size)}'.");
-
-            return false;
-        }
-
-        size = content.Length - content.Position;
-
-        return true;
-    }
-
-    /// <summary>
-    /// Appends the extension a media type implies, unless the name already carries it.
-    /// </summary>
-    /// <param name="name">The object name.</param>
-    /// <param name="mediaType">The media type to derive the extension from.</param>
-    /// <returns>The name to store under.</returns>
-    private static string WithExtension(string name, string mediaType)
-    {
-        if (string.Equals(mediaType, MediaTypes.Default, StringComparison.OrdinalIgnoreCase))
-            return name;
-
-        if (!MediaTypes.TryGetExtension(mediaType, out var extension)
-            || name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
-            return name;
-
-        return name + extension;
-    }
-
-    /// <summary>
-    /// Finds metadata that cannot be sent as headers.
-    /// </summary>
-    /// <param name="metadata">The metadata to judge.</param>
-    /// <returns>What is wrong with it, or <see langword="null"/> when it can be sent.</returns>
-    /// <remarks>
-    /// A name outside the characters a header name allows, or a value carrying a carriage return, is the
-    /// classic response-splitting payload. Refusing it here keeps it away from the SDK, which would either
-    /// throw from somewhere the caller cannot see or, worse, send it.
-    /// </remarks>
-    private static StorageError? Fault(IReadOnlyDictionary<string, string>? metadata)
-    {
-        if (metadata is null)
-            return null;
-
-        foreach (var (key, value) in metadata)
-        {
-            if (string.IsNullOrWhiteSpace(key) || key.AsSpan().ContainsAnyExcept(HeaderNameCharacters))
-                return new StorageError(
-                    StorageErrorKind.InvalidArgument,
-                    $"The metadata name '{key}' is not a header name.");
-
-            if (value.AsSpan().ContainsAnyInRange('\u0000', '\u001F') || value.AsSpan().ContainsAnyInRange('\u007F', '\u009F'))
-                return new StorageError(
-                    StorageErrorKind.InvalidArgument,
-                    $"The metadata value of '{key}' carries a control character.");
-
-            if (!Ascii.IsValid(value))
-                return new StorageError(
-                    StorageErrorKind.InvalidArgument,
-                    $"The metadata value of '{key}' is not US-ASCII. Headers cannot carry anything else; "
-                    + "encode the value yourself if it has to travel.");
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Adds user metadata to an upload.
-    /// </summary>
-    /// <param name="args">The request being built.</param>
-    /// <param name="metadata">The metadata to store, when there is any.</param>
-    /// <returns>The same request.</returns>
-    /// <remarks>
-    /// The SDK reads the names it is given one by one, in order, and keeps none of them, so the caller's own
-    /// dictionary is handed over whole; only one that is not an <see cref="IDictionary{TKey, TValue}"/> is copied.
-    /// No names are not handed over at all: the SDK would rewrite the media type header it was given.
-    /// </remarks>
-    private static PutObjectArgs Describe(PutObjectArgs args, IReadOnlyDictionary<string, string>? metadata)
-    {
-        if (metadata is null || metadata.Count == 0)
-            return args;
-
-        var headers = metadata as IDictionary<string, string>
-            ?? new Dictionary<string, string>(metadata, StringComparer.Ordinal);
-
-        return args.WithHeaders(headers);
-    }
-
-    /// <summary>
-    /// Describes an object from what the SDK reported.
-    /// </summary>
-    /// <param name="bucket">The bucket read from.</param>
-    /// <param name="name">The object read.</param>
-    /// <param name="stat">What the server said.</param>
-    /// <returns>The metadata a caller sees.</returns>
-    private static StoredObject Describe(string bucket, string name, ObjectStat stat) => new()
-    {
-        Bucket = bucket,
-        Name = name,
-        Size = stat.Size,
-        MediaType = string.IsNullOrWhiteSpace(stat.ContentType) ? MediaTypes.Default : stat.ContentType,
-        ETag = stat.ETag,
-        LastModified = LocalMoment(stat.LastModified),
-        Metadata = UserMetadata(stat.MetaData)
-    };
-
-    /// <summary>
-    /// Reads the moment a stat reported on the clock the SDK read it with.
-    /// </summary>
-    /// <param name="reported">What the SDK parsed, or the first day of year one when the answer named no moment.</param>
-    /// <returns>The moment on the local clock, or the first day of year one on UTC where the local clock cannot show it.</returns>
-    /// <remarks>
-    /// An answer without <c>Last-Modified</c> leaves the SDK's moment at its default. Taken on a clock east of UTC,
-    /// that moment falls before year one and the conversion raises out of a stat that succeeded; there it reads as
-    /// the same day on UTC, which is what a clock on UTC already shows and what any clock west of it shows on its own.
-    /// Only the first day is asked about the local offset, so a stat that names its moment pays nothing more.
-    /// </remarks>
-    private static DateTimeOffset LocalMoment(DateTime reported)
-    {
-        var isFirstDay = reported.Kind != DateTimeKind.Utc && reported.Ticks < TimeSpan.TicksPerDay;
-
-        if (isFirstDay && reported - DateTime.MinValue < TimeZoneInfo.Local.GetUtcOffset(reported))
-            return DateTimeOffset.MinValue;
-
-        return reported;
-    }
-
-    /// <summary>
-    /// Keeps the metadata a caller wrote and drops what the protocol added.
-    /// </summary>
-    /// <param name="reported">Everything the SDK reported as metadata.</param>
-    /// <returns>Only the names a caller would recognise.</returns>
-    /// <remarks>
-    /// The SDK mixes the media type and the transfer headers into the same dictionary as the user's own
-    /// names, so handing it back whole would invent metadata nobody stored. What is left is a handful of
-    /// names per object, kept where nobody can write through them: freezing so few costs more than every
-    /// lookup it saves, once for each object a listing walks. The SDK reports a dictionary, read without
-    /// boxing its enumerator; anything else, or more names than are compared in turn, keeps a dictionary.
-    /// </remarks>
-    private static IReadOnlyDictionary<string, string> UserMetadata(IDictionary<string, string>? reported)
-    {
-        if (reported is null || reported.Count == 0)
-            return FrozenDictionary<string, string>.Empty;
-
-        if (reported.Count <= ObjectMetadata.MostNames
-            && reported is Dictionary<string, string> dictionary
-            && Kept(dictionary) is { } kept)
-            return kept.Count == 0 ? FrozenDictionary<string, string>.Empty : kept;
-
-        Dictionary<string, string>? metadata = null;
-
-        foreach (var (key, value) in reported)
-        {
-            if (IsProtocol(key))
-                continue;
-
-            metadata ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            metadata[key] = value;
-        }
-
-        return metadata is null ? FrozenDictionary<string, string>.Empty : metadata.AsReadOnly();
-    }
-
-    /// <summary>
-    /// Keeps the names of a reported dictionary that the protocol did not add.
-    /// </summary>
-    /// <param name="reported">Everything the SDK reported as metadata.</param>
-    /// <returns>The caller's names, or <see langword="null"/> when more came than were counted.</returns>
-    private static ObjectMetadata? Kept(Dictionary<string, string> reported)
-    {
-        var kept = new ObjectMetadata(reported.Count);
-
-        foreach (var (key, value) in reported)
-        {
-            if (!IsProtocol(key) && !kept.TrySet(key, value))
-                return null;
-        }
-
-        return kept;
-    }
-
-    /// <summary>
-    /// Decides whether a name belongs to the protocol rather than to the caller.
-    /// </summary>
-    /// <param name="name">The name to judge.</param>
-    /// <returns><see langword="true"/> when the wire, not the caller, put it there.</returns>
-    private static bool IsProtocol(string name)
-        => name.StartsWith("x-amz-", StringComparison.OrdinalIgnoreCase)
-            || ProtocolNames.Contains(name);
-
-    /// <summary>
-    /// Describes an object from what a listing reported.
-    /// </summary>
-    /// <param name="bucket">The bucket listed.</param>
-    /// <param name="item">One entry of the listing.</param>
-    /// <returns>The metadata a caller sees.</returns>
-    private static StoredObject Describe(string bucket, Item item) => new()
-    {
-        Bucket = bucket,
-        Name = item.Key,
-        Size = (long)item.Size,
-        MediaType = string.IsNullOrWhiteSpace(item.ContentType) ? MediaTypes.Default : item.ContentType,
-        ETag = item.ETag,
-        LastModified = Moment(item.LastModifiedDateTime),
-        Metadata = UserMetadata(item.UserMetadata)
-    };
-
-    /// <summary>
-    /// Reads a moment a listing reported without assuming which clock it came from.
-    /// </summary>
-    /// <param name="reported">What the SDK parsed, when it parsed anything.</param>
-    /// <returns>The moment, in UTC.</returns>
-    private static DateTimeOffset? Moment(DateTime? reported)
-    {
-        if (reported is not { } moment)
-            return null;
-
-        return moment.Kind == DateTimeKind.Unspecified
-            ? new DateTimeOffset(DateTime.SpecifyKind(moment, DateTimeKind.Utc))
-            : new DateTimeOffset(moment.ToUniversalTime());
-    }
-
-    /// <summary>
-    /// Describes an object from the headers the server answered with.
-    /// </summary>
-    /// <param name="bucket">The bucket read from.</param>
-    /// <param name="name">The object read.</param>
-    /// <param name="response">The response to read the headers of.</param>
-    /// <returns>The metadata a caller sees.</returns>
-    /// <remarks>
-    /// <c>Content-Range</c> is preferred over <c>Content-Length</c> for the size, so a ranged read still
-    /// reports how large the object is rather than how much of it was asked for.
-    /// </remarks>
-    private static StoredObject Describe(string bucket, string name, HttpResponseMessage response)
-    {
-        var content = response.Content.Headers;
-
-        return new StoredObject
-        {
-            Bucket = bucket,
-            Name = name,
-            Size = content.ContentRange?.Length ?? content.ContentLength ?? 0,
-            MediaType = content.ContentType?.MediaType ?? MediaTypes.Default,
-            ETag = response.Headers.ETag?.Tag.Trim('"'),
-            LastModified = content.LastModified,
-            Metadata = UserMetadata(response.Headers)
-        };
-    }
-
-    /// <summary>
-    /// Reads the metadata a caller wrote from the <c>x-amz-meta-</c> headers of a response.
-    /// </summary>
-    /// <param name="headers">The headers the server answered with.</param>
-    /// <returns>The names without their prefix, each with its values joined as the headers join them.</returns>
-    /// <remarks>
-    /// The headers are read as they arrived: these values are opaque to HTTP, so parsing them into a
-    /// validated copy, an array of strings per header, would change nothing but the cost. They are counted
-    /// first, so a handful is kept in an array of exactly that many.
-    /// </remarks>
-    private static IReadOnlyDictionary<string, string> UserMetadata(HttpResponseHeaders headers)
-    {
-        var count = 0;
-
-        foreach (var (name, _) in headers.NonValidated)
-        {
-            if (name.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
-                count++;
-        }
-
-        if (count == 0)
-            return FrozenDictionary<string, string>.Empty;
-
-        if (count <= ObjectMetadata.MostNames)
-            return Kept(headers, count);
-
-        Dictionary<string, string>? metadata = null;
-
-        foreach (var (name, values) in headers.NonValidated)
-        {
-            if (!name.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            metadata ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            metadata[name[MetadataPrefix.Length..]] = values.ToString();
-        }
-
-        return metadata is null ? FrozenDictionary<string, string>.Empty : metadata.AsReadOnly();
-    }
-
-    /// <summary>
-    /// Keeps the <c>x-amz-meta-</c> headers of a response, counted beforehand.
-    /// </summary>
-    /// <param name="headers">The headers the server answered with.</param>
-    /// <param name="count">How many of them carry the prefix.</param>
-    /// <returns>The names without their prefix, each with its values joined as the headers join them.</returns>
-    private static ObjectMetadata Kept(HttpResponseHeaders headers, int count)
-    {
-        var kept = new ObjectMetadata(count);
-
-        foreach (var (name, values) in headers.NonValidated)
-        {
-            if (name.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
-                kept.TrySet(name[MetadataPrefix.Length..], values.ToString());
-        }
-
-        return kept;
-    }
-
-    /// <summary>
-    /// A listing being walked, one entry at a time, with its failures answered as data.
-    /// </summary>
-    /// <param name="items">The entries the SDK yields.</param>
-    private sealed class Walk(IAsyncEnumerator<Item> items) : IAsyncDisposable
-    {
-        /// <summary>Gets the entry the walk stands on, or <see langword="null"/> once it has ended.</summary>
-        public Item? Current { get; private set; }
-
-        /// <summary>
-        /// Moves to the next entry.
-        /// </summary>
-        /// <param name="cancellationToken">The caller's token, whose cancellation is rethrown rather than answered.</param>
-        /// <returns><see langword="null"/> when the walk moved on or ended, or why it could not.</returns>
-        public async ValueTask<StorageError?> AdvanceAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                Current = await items.MoveNextAsync().ConfigureAwait(false) ? items.Current : null;
-
-                return null;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                Current = null;
-
-                return MinioErrors.From(exception);
-            }
-        }
-
-        /// <inheritdoc />
-        public ValueTask DisposeAsync() => items.DisposeAsync();
-    }
-
-    /// <summary>
-    /// A response body that closes its response when the caller is done reading.
-    /// </summary>
-    /// <param name="inner">The body being read.</param>
-    /// <param name="response">The response the body belongs to.</param>
-    /// <remarks>
-    /// <para>
-    /// The caller is handed a stream and told it owns it. Without this, disposing that stream would leave
-    /// the response — and the connection it is holding — alive until a garbage collection got to it.
-    /// </para>
-    /// <para>
-    /// Reading it after it is closed raises. The response body underneath answers zero bytes instead, which
-    /// a caller cannot tell from an empty object — a truncated download that looks like a successful one.
-    /// </para>
-    /// </remarks>
-    private sealed class ResponseStream(Stream inner, HttpResponseMessage response) : Stream
-    {
-        private bool _disposed;
-
-        public override bool CanRead => !_disposed && inner.CanRead;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-
-            return inner.Read(buffer, offset, count);
-        }
-
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-
-            return inner.ReadAsync(buffer, cancellationToken);
-        }
-
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-
-            return inner.ReadAsync(buffer, offset, count, cancellationToken);
-        }
-
-        public override void Flush() => inner.Flush();
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-        public override async ValueTask DisposeAsync()
-        {
-            if (!_disposed)
-            {
-                _disposed = true;
-
-                await inner.DisposeAsync().ConfigureAwait(false);
-                response.Dispose();
-            }
-
-            await base.DisposeAsync().ConfigureAwait(false);
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && !_disposed)
-            {
-                _disposed = true;
-
-                inner.Dispose();
-                response.Dispose();
-            }
-
-            base.Dispose(disposing);
-        }
     }
 }
