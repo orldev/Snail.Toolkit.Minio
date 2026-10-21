@@ -34,6 +34,8 @@ Snail.Toolkit.Minio.Adapters.MinioOptions
 Snail.Toolkit.Minio.Adapters.MinioOptions.<Clone>$() -> Snail.Toolkit.Minio.Adapters.MinioOptions!
 Snail.Toolkit.Minio.Adapters.MinioOptions.AccessKey.get -> string?
 Snail.Toolkit.Minio.Adapters.MinioOptions.AccessKey.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.CanListUserMetadata.get -> bool
+Snail.Toolkit.Minio.Adapters.MinioOptions.CanListUserMetadata.init -> void
 Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakDuration.get -> System.TimeSpan
 Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakDuration.init -> void
 Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakFailures.get -> int

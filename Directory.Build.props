@@ -3,7 +3,7 @@
   <!-- The rest of the build — language, nullable, docs, analyzers, warnings as errors — is Snail.Sdk's (global.json). -->
   <PropertyGroup>
     <!-- The last release on NuGet: a pack fails on any change that would break a user of it. Raised with each release. -->
-    <SnailPackageBaseline>1.2.0</SnailPackageBaseline>
+    <SnailPackageBaseline>1.3.0</SnailPackageBaseline>
   </PropertyGroup>
 
 </Project>
