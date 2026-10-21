@@ -203,6 +203,10 @@ await foreach (var item in storage.EnumerateAsync("reports", cancellationToken: 
 Use this rather than paging through a large bucket: resuming from a cursor costs a walk to that point,
 because the SDK offers no way to start a listing after a given name.
 
+A listing asks for each object's metadata, which MinIO serves and AWS S3 does not: against any other S3
+server, set `CanListUserMetadata` to `false`, or every listing fails. Listed objects then carry no metadata
+and the default media type; `StatAsync` reads both.
+
 ### Ask whether something is there
 
 ```csharp
@@ -341,6 +345,7 @@ because a caller who cancelled is not asking to be told about it as data.
 | `CircuitBreakFailures` | `10` | failures in a row before calls stop going out; `0` turns it off |
 | `CircuitBreakDuration` | `00:00:05` | how long they stop |
 | `SignedUrlLifetime` | `00:01:00` | default life of a signed URL |
+| `CanListUserMetadata` | `true` | listings carry each object's metadata and media type, a MinIO extension; `false` for AWS S3 or another S3 server, whose listings then name objects only |
 
 Settings are validated when the host starts, not when the first request runs.
 

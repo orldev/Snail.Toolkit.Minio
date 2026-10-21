@@ -20,6 +20,11 @@ namespace Snail.Toolkit.Minio.Adapters;
 /// </summary>
 /// <remarks>
 /// <para>
+/// With the default settings a listing asks for each object's user metadata, a MinIO extension: MinIO serves it,
+/// and every other operation works the same against any S3 server. For AWS S3 or another S3 server, turn
+/// <see cref="MinioOptions.CanListUserMetadata"/> off, and listings name objects without their metadata.
+/// </para>
+/// <para>
 /// Writes and metadata go through the Minio SDK. Reads do not: they are issued against a URL this adapter
 /// signs with the SDK and then fetches itself. Two reasons, both measured rather than assumed. Minio 7.0.0
 /// turns every HTTP 206 answer into an exception, so ranged reads are impossible through the SDK's own read
@@ -362,7 +367,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         options ??= new ListOptions();
 
         await using var walk = _client
-            .ListObjectsEnumAsync(Listing(bucket, options), cancellationToken)
+            .ListObjectsEnumAsync(Listing(bucket, options, Settings.CanListUserMetadata), cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
         while (true)
@@ -932,7 +937,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         try
         {
             await foreach (var item in _client
-                .ListObjectsEnumAsync(Listing(bucket, options), cancellationToken)
+                .ListObjectsEnumAsync(Listing(bucket, options, Settings.CanListUserMetadata), cancellationToken)
                 .ConfigureAwait(false))
             {
                 if (skipping)
@@ -976,16 +981,18 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// </summary>
     /// <param name="bucket">The bucket to list.</param>
     /// <param name="options">What to list.</param>
+    /// <param name="canListUserMetadata">Whether the server lists objects with their user metadata.</param>
     /// <returns>The request.</returns>
     /// <remarks>
-    /// User metadata is asked for, so a listing describes what it found rather than only naming it.
+    /// User metadata is asked for where the server answers it, so a listing describes what it found rather than
+    /// only naming it. A server that does not answer it would fail the whole listing inside the Minio client.
     /// </remarks>
-    private static ListObjectsArgs Listing(string bucket, ListOptions options)
+    private static ListObjectsArgs Listing(string bucket, ListOptions options, bool canListUserMetadata)
     {
         var listing = new ListObjectsArgs()
             .WithBucket(bucket)
             .WithRecursive(options.IsRecursive)
-            .WithIncludeUserMetadata(true);
+            .WithIncludeUserMetadata(canListUserMetadata);
 
         return options.Prefix is { } prefix ? listing.WithPrefix(prefix) : listing;
     }

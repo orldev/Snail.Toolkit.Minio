@@ -71,6 +71,7 @@ Everything needed to reach one Minio or S3-compatible server.
 | `TimeSpan RetryDelay { get; init; }` | Gets the delay before the first retry; each further attempt doubles it. |
 | `TimeSpan SignedUrlLifetime { get; init; }` | Gets how long a signed read URL stays valid. |
 | `TimeSpan? Timeout { get; init; }` | Gets how long a single request may take before it is abandoned. |
+| `bool CanListUserMetadata { get; init; }` | Gets a value indicating whether the server lists objects with their user metadata. |
 | `bool IsSecure { get; init; }` | Gets a value indicating whether connections are encrypted. |
 | `const string SectionName` | The configuration section read when no name is given. |
 | `int CircuitBreakFailures { get; init; }` | Gets how many failures in a row stop the adapter from trying at all. |

@@ -95,6 +95,15 @@ public sealed record MinioOptions
     /// <summary>Gets how long the adapter answers without asking after it has stopped trying.</summary>
     public TimeSpan CircuitBreakDuration { get; init; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>Gets a value indicating whether the server lists objects with their user metadata.</summary>
+    /// <remarks>
+    /// Listing objects with their metadata is a MinIO extension of S3, so it is on by default and a listed object
+    /// carries its user metadata and media type. AWS S3 and other S3 servers do not answer it, and the Minio
+    /// client then fails every listing; turned off, a listing asks for names only, and a listed object carries no
+    /// user metadata and the default media type until it is stat'ed.
+    /// </remarks>
+    public bool CanListUserMetadata { get; init; } = true;
+
     /// <summary>Gets how long a signed read URL stays valid.</summary>
     /// <remarks>
     /// Reads are issued against a URL this library signs itself. The URL never leaves the process, so this

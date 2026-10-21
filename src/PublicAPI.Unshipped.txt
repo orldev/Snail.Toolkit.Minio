@@ -1,1 +1,3 @@
 #nullable enable
+Snail.Toolkit.Minio.Adapters.MinioOptions.CanListUserMetadata.get -> bool
+Snail.Toolkit.Minio.Adapters.MinioOptions.CanListUserMetadata.init -> void
