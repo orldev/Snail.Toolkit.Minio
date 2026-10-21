@@ -1,4 +1,3 @@
-using System.Reflection;
 using Snail.Toolkit.Minio.Adapters;
 
 namespace Snail.Toolkit.Minio.Tests;

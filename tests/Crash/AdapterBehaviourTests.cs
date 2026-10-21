@@ -144,7 +144,7 @@ public class AdapterBehaviourTests
             get
             {
                 lock (_levels)
-                    return _levels.ToArray();
+                    return [.. _levels];
             }
         }
 

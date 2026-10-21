@@ -29,6 +29,12 @@ internal static class MediaTypes
 
     private static readonly FrozenDictionary<string, string> Mappings = Build();
 
+    private static readonly FrozenDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> MappingsBySpan =
+        Mappings.GetAlternateLookup<ReadOnlySpan<char>>();
+
+    /// <summary>The longest bare name given a dot on the stack rather than in a new string.</summary>
+    private const int StackNameLimit = 256;
+
     /// <summary>
     /// Finds the media type that belongs to a file name or a bare extension.
     /// </summary>
@@ -39,7 +45,7 @@ internal static class MediaTypes
     {
         ArgumentNullException.ThrowIfNull(fileName);
 
-        return Mappings.TryGetValue(ToExtension(fileName), out mediaType);
+        return TryGetByExtension(fileName, out mediaType);
     }
 
     /// <summary>
@@ -67,27 +73,40 @@ internal static class MediaTypes
     }
 
     /// <summary>
-    /// Reduces a file name to the dotted extension the table is keyed by.
+    /// Looks a file name up by the dotted extension the table is keyed by.
     /// </summary>
-    /// <param name="fileName">The value to reduce.</param>
-    /// <returns>The extension, always starting with a dot.</returns>
+    /// <param name="fileName">The value to reduce to its extension.</param>
+    /// <param name="mediaType">The media type, when one is known.</param>
+    /// <returns><see langword="true"/> when the table knows the extension.</returns>
     /// <remarks>
     /// A query string is dropped first, so a name taken straight from a URL resolves the same way as one
-    /// taken from disk.
+    /// taken from disk. The extension is a view of the name, not a new string; a name without one is
+    /// looked up whole behind a dot.
     /// </remarks>
-    private static string ToExtension(string fileName)
+    private static bool TryGetByExtension(string fileName, [NotNullWhen(true)] out string? mediaType)
     {
-        var query = fileName.IndexOf('?');
+        var name = fileName.AsSpan();
+        var query = name.IndexOf('?');
 
         if (query != -1)
-            fileName = fileName[..query];
+            name = name[..query];
 
-        if (fileName.StartsWith('.'))
-            return fileName;
+        if (name.StartsWith('.'))
+            return MappingsBySpan.TryGetValue(name, out mediaType);
 
-        var dot = fileName.LastIndexOf('.');
+        var dot = name.LastIndexOf('.');
 
-        return dot != -1 && fileName.Length > dot + 1 ? fileName[dot..] : "." + fileName;
+        if (dot != -1 && name.Length > dot + 1)
+            return MappingsBySpan.TryGetValue(name[dot..], out mediaType);
+
+        if (name.Length >= StackNameLimit)
+            return Mappings.TryGetValue(string.Concat(".", name), out mediaType);
+
+        Span<char> dotted = stackalloc char[name.Length + 1];
+        dotted[0] = '.';
+        name.CopyTo(dotted[1..]);
+
+        return MappingsBySpan.TryGetValue(dotted, out mediaType);
     }
 
     /// <summary>

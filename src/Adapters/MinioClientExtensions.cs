@@ -123,14 +123,34 @@ public static class MinioClientExtensions
     /// The single copy of the try/catch every call needs. It existed six times before, and the guard that
     /// separates the caller's cancellation from the client's own timeout had to be right in each of them.
     /// </remarks>
-    internal static async Task<StorageResult<T>> ExecuteAsync<T>(
+    internal static Task<StorageResult<T>> ExecuteAsync<T>(
         Func<Task<T>> operation,
+        CancellationToken cancellationToken)
+        where T : notnull
+        => ExecuteAsync(static operation => operation(), operation, cancellationToken);
+
+    /// <summary>
+    /// Runs one SDK call on what it was handed and turns its failure into data.
+    /// </summary>
+    /// <typeparam name="TState">What the call is made with.</typeparam>
+    /// <typeparam name="T">What the call produces.</typeparam>
+    /// <param name="operation">The call to run, capturing nothing.</param>
+    /// <param name="state">What the call is made with.</param>
+    /// <param name="cancellationToken">The token the caller supplied.</param>
+    /// <returns>The value, or the translated failure.</returns>
+    /// <remarks>
+    /// The call is handed its state rather than capturing it, so a call on a hot path costs no closure and no
+    /// delegate each time it runs.
+    /// </remarks>
+    internal static async Task<StorageResult<T>> ExecuteAsync<TState, T>(
+        Func<TState, Task<T>> operation,
+        TState state,
         CancellationToken cancellationToken)
         where T : notnull
     {
         try
         {
-            return StorageResult<T>.Success(await operation().ConfigureAwait(false));
+            return StorageResult<T>.Success(await operation(state).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

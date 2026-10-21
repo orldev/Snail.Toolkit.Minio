@@ -43,7 +43,7 @@ internal sealed class UnresponsiveServer : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        _listener.Stop();
+        _listener.Dispose();
 
         lock (_accepted)
         {

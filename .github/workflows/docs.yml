@@ -1,0 +1,19 @@
+name: documentation
+
+# The API reference and docs/ on GitHub Pages, from every push to the default branch.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: orldev/Snail.Sdk/.github/workflows/docs.yml@v1

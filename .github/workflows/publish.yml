@@ -1,48 +1,42 @@
-name: Release to NuGet
+name: release to NuGet
+
+# A version tag (v1.2.0, v1.2.0-preview.1) releases every package at that version; run by hand, it packs and checks
+# them and pushes only when asked to. The shared workflow builds, tests and packs; the push is a job of this file
+# because nuget.org gives a trusted publishing key only to a job of the workflow file its policy names in this
+# repository (job_workflow_ref): this publish.yml, with the secret NUGET_USER.
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to pack, such as 0.3.0 or 0.3.0-preview.1
+        required: true
+      push:
+        description: Push the packages to NuGet
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  release:
+    uses: orldev/Snail.Sdk/.github/workflows/lib-publish.yml@v1
+    with:
+      version: ${{ inputs.version }}
+      push: ${{ github.event_name == 'push' || inputs.push }}
+    secrets: inherit
+
+  push:
+    needs: release
+    if: needs.release.outputs.push == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    
     permissions:
       id-token: write
       contents: read
-    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.x
-
-      - name: Build
-        run: dotnet build -c Release
-
-      - name: Test
-        run: dotnet test -c Release --no-build
-
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Pack nugets
-        run: dotnet pack -c Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output .
-
-
-      - name: NuGet login (OIDC → temp API key)
-        uses: NuGet/login@v1
-        id: login
+      - uses: orldev/Snail.Sdk/.github/actions/nuget-push@v1
         with:
           user: ${{ secrets.NUGET_USER }}
-
-
-      - name: Push to NuGet
-        run: dotnet nuget push "*.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

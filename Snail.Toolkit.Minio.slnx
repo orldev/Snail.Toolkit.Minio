@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="benchmarks/Snail.Toolkit.Minio.Benchmarks.csproj" />
+  <Project Path="src/Snail.Toolkit.Minio.csproj" />
+  <Project Path="tests/Snail.Toolkit.Minio.Tests.csproj" />
+</Solution>

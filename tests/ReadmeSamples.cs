@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Snail.Toolkit.Minio.Domain;
 using Snail.Toolkit.Minio.Ports;
@@ -11,6 +12,7 @@ namespace Snail.Toolkit.Minio.Tests;
 /// Documentation that does not compile is worse than none: it is confidently wrong. These are the readme's
 /// snippets, verbatim enough that a change breaking them breaks the build.
 /// </remarks>
+[SuppressMessage("Performance", "CA1848", Justification = "The readme's samples log as a reader of the readme would; LoggerMessage would make them a different sample.")]
 public sealed class ReadmeSamples(IObjectStorage storage, IBuckets buckets, ILogger<ReadmeSamples> logger)
 {
     public async Task<string?> SaveAsync(Stream file, string name, CancellationToken token)

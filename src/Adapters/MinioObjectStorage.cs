@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Frozen;
+using System.Text;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Net.Http.Headers;
@@ -51,6 +53,10 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
     /// <summary>The code a server answers with when a bucket expires nothing.</summary>
     private const string NoLifecycleConfiguration = "NoSuchLifecycleConfiguration";
+
+    /// <summary>The characters RFC 7230 allows in a header name, a token.</summary>
+    private static readonly SearchValues<char> HeaderNameCharacters =
+        SearchValues.Create("!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
 
     /// <summary>The names a server reports as metadata that no caller ever stored.</summary>
     private static readonly HashSet<string> ProtocolNames = new(StringComparer.OrdinalIgnoreCase)
@@ -126,17 +132,20 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var response = await RetryAsync(
             "put",
-            () => MinioClientExtensions.ExecuteAsync(
-                () => _client.PutObjectAsync(
+            (Client: _client, Bucket: bucket, Name: name, MediaType: mediaType, Content: content, Size: size,
+                options.Metadata, CancellationToken: cancellationToken),
+            static upload => MinioClientExtensions.ExecuteAsync(
+                static upload => upload.Client.PutObjectAsync(
                     Describe(new PutObjectArgs()
-                        .WithBucket(bucket)
-                        .WithObject(name)
-                        .WithContentType(mediaType)
-                        .WithStreamData(content)
-                        .WithObjectSize(size), options.Metadata),
-                    cancellationToken),
-                cancellationToken),
-            () => false,
+                        .WithBucket(upload.Bucket)
+                        .WithObject(upload.Name)
+                        .WithContentType(upload.MediaType)
+                        .WithStreamData(upload.Content)
+                        .WithObjectSize(upload.Size), upload.Metadata),
+                    upload.CancellationToken),
+                upload,
+                upload.CancellationToken),
+            static _ => false,
             cancellationToken).ConfigureAwait(false);
 
         if (!response.TryGetValue(out var stored))
@@ -149,11 +158,54 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             Size = size,
             MediaType = mediaType,
             ETag = stored.Etag,
-            Metadata = options.Metadata is null
-                ? FrozenDictionary<string, string>.Empty
-                : options.Metadata.ToFrozenDictionary(
-                    entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase)
+            Metadata = Written(options.Metadata)
         });
+    }
+
+    /// <summary>
+    /// The metadata an upload stored, as the caller will read it back: names in any case.
+    /// </summary>
+    /// <param name="metadata">What the caller gave.</param>
+    /// <returns>A copy nobody can write through, or the shared empty one.</returns>
+    /// <remarks>
+    /// Copied, not frozen: a handful of names is looked up a few times at most, and freezing costs more
+    /// than those lookups save. Two names that differ only in case are refused as freezing refused them:
+    /// the copy that finds them is given up for the dictionary, whose refusal is the one a caller saw.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, string> Written(IReadOnlyDictionary<string, string>? metadata)
+    {
+        if (metadata is null || metadata.Count == 0)
+            return FrozenDictionary<string, string>.Empty;
+
+        if (metadata.Count <= ObjectMetadata.MostNames && Kept(metadata) is { } kept)
+            return kept;
+
+        var copy = new Dictionary<string, string>(metadata.Count, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, value) in metadata)
+        {
+            copy.Add(key, value);
+        }
+
+        return copy.AsReadOnly();
+    }
+
+    /// <summary>
+    /// Copies an upload's few names, each once in any case.
+    /// </summary>
+    /// <param name="metadata">What the caller gave.</param>
+    /// <returns>The copy, or <see langword="null"/> when two names differ only in case or more came than were counted.</returns>
+    private static ObjectMetadata? Kept(IReadOnlyDictionary<string, string> metadata)
+    {
+        var kept = new ObjectMetadata(metadata.Count);
+
+        foreach (var (key, value) in metadata)
+        {
+            if (!kept.TryAdd(key, value))
+                return null;
+        }
+
+        return kept;
     }
 
     /// <inheritdoc />
@@ -169,8 +221,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var opened = await RetryAsync(
             "get",
-            () => OpenAsync(bucket, name, range: null, cancellationToken),
-            () => true,
+            (Storage: this, Bucket: bucket, Name: name, CancellationToken: cancellationToken),
+            static read => read.Storage.OpenAsync(read.Bucket, read.Name, range: null, read.CancellationToken),
+            static _ => true,
             cancellationToken).ConfigureAwait(false);
 
         if (!opened.TryGetValue(out var response))
@@ -238,8 +291,14 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var stat = await RetryAsync(
             "stat",
-            () => _client.StatObjectAsync(bucket, name, cancellationToken: cancellationToken),
-            () => true,
+            (Client: _client, Bucket: bucket, Name: name, CancellationToken: cancellationToken),
+            static stat => MinioClientExtensions.ExecuteAsync(
+                static stat => stat.Client.StatObjectAsync(
+                    new StatObjectArgs().WithBucket(stat.Bucket).WithObject(stat.Name),
+                    stat.CancellationToken),
+                stat,
+                stat.CancellationToken),
+            static _ => true,
             cancellationToken).ConfigureAwait(false);
 
         if (!stat.TryGetValue(out var described))
@@ -386,7 +445,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var created = await RetryAsync(
             "bucket.create",
-            () => Valueless(() => _client.MakeBucketAsync(
+            () => ValuelessAsync(() => _client.MakeBucketAsync(
                 new MakeBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
             () => true,
             cancellationToken).ConfigureAwait(false);
@@ -403,7 +462,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var removed = await RetryAsync(
             "bucket.remove",
-            () => Valueless(() => _client.RemoveBucketAsync(
+            () => ValuelessAsync(() => _client.RemoveBucketAsync(
                 new RemoveBucketArgs().WithBucket(bucket), cancellationToken), cancellationToken),
             () => true,
             cancellationToken).ConfigureAwait(false);
@@ -484,7 +543,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var copied = await RetryAsync(
             "copy",
-            () => Valueless(
+            () => ValuelessAsync(
                 () => _client.CopyObjectAsync(
                     new CopyObjectArgs()
                         .WithBucket(targetBucket)
@@ -537,7 +596,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var written = await RetryAsync(
             "bucket.expiry.set",
-            () => Valueless(() => Write(bucket, rules, cancellationToken), cancellationToken),
+            () => ValuelessAsync(() => Write(bucket, rules, cancellationToken), cancellationToken),
             () => true,
             cancellationToken).ConfigureAwait(false);
 
@@ -724,14 +783,16 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         var copied = await RetryAsync(
             operation,
-            () => CopyOnceAsync(bucket, name, destination, range, cancellationToken),
-            () => Rewind(destination, start),
+            (Storage: this, Bucket: bucket, Name: name, Destination: destination, Range: range, Start: start,
+                CancellationToken: cancellationToken),
+            static copy => copy.Storage.CopyOnceAsync(copy.Bucket, copy.Name, copy.Destination, copy.Range, copy.CancellationToken),
+            static copy => TryRewind(copy.Destination, copy.Start),
             cancellationToken).ConfigureAwait(false);
 
         if (copied.IsSuccess)
             return copied;
 
-        Rewind(destination, start);
+        TryRewind(destination, start);
 
         return Failed<StoredObject>(operation, bucket, name, copied.Error!, activity);
     }
@@ -797,10 +858,11 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         var settings = Settings;
 
         var signed = await MinioClientExtensions.ExecuteAsync(
-            () => _client.PresignedGetObjectAsync(new PresignedGetObjectArgs()
-                .WithBucket(bucket)
-                .WithObject(name)
-                .WithExpiry((int)settings.SignedUrlLifetime.TotalSeconds)),
+            static read => read.Client.PresignedGetObjectAsync(new PresignedGetObjectArgs()
+                .WithBucket(read.Bucket)
+                .WithObject(read.Name)
+                .WithExpiry((int)read.Lifetime.TotalSeconds)),
+            (Client: _client, Bucket: bucket, Name: name, Lifetime: settings.SignedUrlLifetime),
             cancellationToken).ConfigureAwait(false);
 
         if (!signed.TryGetValue(out var url))
@@ -974,7 +1036,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <param name="operation">The call to run.</param>
     /// <param name="cancellationToken">The caller's token.</param>
     /// <returns>Success carrying nothing of interest, or the failure.</returns>
-    private static async Task<StorageResult<bool>> Valueless(
+    private static async Task<StorageResult<bool>> ValuelessAsync(
         Func<Task> operation,
         CancellationToken cancellationToken)
     {
@@ -1018,10 +1080,39 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// Every call the adapter makes goes through here, including the ones that are never retried, because
     /// this is also where the circuit breaker decides whether the server is worth asking at all.
     /// </remarks>
-    private async Task<StorageResult<T>> RetryAsync<T>(
+    private Task<StorageResult<T>> RetryAsync<T>(
         string operation,
         Func<Task<StorageResult<T>>> attempt,
         Func<bool> prepare,
+        CancellationToken cancellationToken)
+        where T : notnull
+        => RetryAsync(
+            operation,
+            (Attempt: attempt, Prepare: prepare),
+            static retry => retry.Attempt(),
+            static retry => retry.Prepare(),
+            cancellationToken);
+
+    /// <summary>
+    /// Repeats an operation on what it was handed while it fails for a reason that may not repeat.
+    /// </summary>
+    /// <typeparam name="TState">What every attempt is made with.</typeparam>
+    /// <typeparam name="T">What the operation produces.</typeparam>
+    /// <param name="operation">The name to report under.</param>
+    /// <param name="state">What every attempt is made with.</param>
+    /// <param name="attempt">The work to repeat, capturing nothing.</param>
+    /// <param name="prepare">Puts the world back where the next attempt can start; false stops retrying.</param>
+    /// <param name="cancellationToken">Cancels the wait between attempts.</param>
+    /// <returns>The first successful outcome, or the last failure.</returns>
+    /// <remarks>
+    /// The attempt is handed its state rather than capturing it, so the reads, the stat and the upload cost no
+    /// closure and no delegate per call.
+    /// </remarks>
+    private async Task<StorageResult<T>> RetryAsync<TState, T>(
+        string operation,
+        TState state,
+        Func<TState, Task<StorageResult<T>>> attempt,
+        Func<TState, bool> prepare,
         CancellationToken cancellationToken)
         where T : notnull
     {
@@ -1038,7 +1129,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         for (var attempted = 0; ; attempted++)
         {
-            var result = await attempt().ConfigureAwait(false);
+            var result = await attempt(state).ConfigureAwait(false);
 
             if (result.IsSuccess)
             {
@@ -1052,18 +1143,13 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             if (worthRetrying)
                 _breaker.Failed(settings);
 
-            if (attempted >= settings.RetryAttempts || !worthRetrying || !prepare())
+            if (attempted >= settings.RetryAttempts || !worthRetrying || !prepare(state))
                 return result;
 
             if (!TryWait(settings, attempted, result.Error, out var delay))
                 return result;
 
-            _logger.LogDebug(
-                "Minio {Operation} failed with {Kind}, retrying in {Delay}. {Message}",
-                operation,
-                result.Error.Kind,
-                delay,
-                result.Error.Message);
+            Log.Retrying(_logger, operation, result.Error.Kind, delay, result.Error.Message);
 
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         }
@@ -1139,7 +1225,7 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <param name="destination">The stream to rewind.</param>
     /// <param name="start">The position the read began at, or -1 when the stream cannot seek.</param>
     /// <returns><see langword="true"/> when the stream is back where it started.</returns>
-    private static bool Rewind(Stream destination, long start)
+    private static bool TryRewind(Stream destination, long start)
     {
         if (start < 0 || !destination.CanSeek)
             return false;
@@ -1188,9 +1274,9 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
         activity?.SetStatus(ActivityStatusCode.Error, error.Message);
         activity?.SetTag("storage.error", error.Kind.ToString());
 
-        _logger.Log(
+        Log.Failed(
+            _logger,
             IsExpected(error.Kind) ? LogLevel.Debug : LogLevel.Warning,
-            "Minio {Operation} on {Bucket}/{Object} failed with {Kind}{Status}. {Message}",
             operation,
             bucket,
             name,
@@ -1223,8 +1309,14 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <param name="bucket">The bucket addressed.</param>
     /// <param name="name">The object addressed.</param>
     /// <returns>The activity, or <see langword="null"/> when nothing is listening.</returns>
+    /// <remarks>
+    /// Nothing listening is asked first, so the activity's name is not built for every call that records nothing.
+    /// </remarks>
     private Activity? Start(string operation, string bucket, string name)
     {
+        if (!Source.HasListeners())
+            return null;
+
         var activity = Source.StartActivity($"storage.{operation}", ActivityKind.Client);
 
         activity?.SetTag("storage.system", "minio");
@@ -1313,17 +1405,17 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
 
         foreach (var (key, value) in metadata)
         {
-            if (string.IsNullOrWhiteSpace(key) || !key.All(IsHeaderName))
+            if (string.IsNullOrWhiteSpace(key) || key.AsSpan().ContainsAnyExcept(HeaderNameCharacters))
                 return new StorageError(
                     StorageErrorKind.InvalidArgument,
                     $"The metadata name '{key}' is not a header name.");
 
-            if (value.Any(char.IsControl))
+            if (value.AsSpan().ContainsAnyInRange('\u0000', '\u001F') || value.AsSpan().ContainsAnyInRange('\u007F', '\u009F'))
                 return new StorageError(
                     StorageErrorKind.InvalidArgument,
                     $"The metadata value of '{key}' carries a control character.");
 
-            if (!value.All(char.IsAscii))
+            if (!Ascii.IsValid(value))
                 return new StorageError(
                     StorageErrorKind.InvalidArgument,
                     $"The metadata value of '{key}' is not US-ASCII. Headers cannot carry anything else; "
@@ -1334,30 +1426,25 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     }
 
     /// <summary>
-    /// Decides whether a character may appear in a header name.
-    /// </summary>
-    /// <param name="candidate">The character to judge.</param>
-    /// <returns><see langword="true"/> when RFC 7230 allows it in a token.</returns>
-    private static bool IsHeaderName(char candidate)
-        => char.IsAsciiLetterOrDigit(candidate) || "!#$%&\'*+-.^_`|~".Contains(candidate, StringComparison.Ordinal);
-
-    /// <summary>
     /// Adds user metadata to an upload.
     /// </summary>
     /// <param name="args">The request being built.</param>
     /// <param name="metadata">The metadata to store, when there is any.</param>
     /// <returns>The same request.</returns>
+    /// <remarks>
+    /// The SDK reads the names it is given one by one, in order, and keeps none of them, so the caller's own
+    /// dictionary is handed over whole; only one that is not an <see cref="IDictionary{TKey, TValue}"/> is copied.
+    /// No names are not handed over at all: the SDK would rewrite the media type header it was given.
+    /// </remarks>
     private static PutObjectArgs Describe(PutObjectArgs args, IReadOnlyDictionary<string, string>? metadata)
     {
-        if (metadata is null)
+        if (metadata is null || metadata.Count == 0)
             return args;
 
-        foreach (var (key, value) in metadata)
-        {
-            args = args.WithHeaders(new Dictionary<string, string>(StringComparer.Ordinal) { [key] = value });
-        }
+        var headers = metadata as IDictionary<string, string>
+            ?? new Dictionary<string, string>(metadata, StringComparer.Ordinal);
 
-        return args;
+        return args.WithHeaders(headers);
     }
 
     /// <summary>
@@ -1385,21 +1472,51 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
     /// <returns>Only the names a caller would recognise.</returns>
     /// <remarks>
     /// The SDK mixes the media type and the transfer headers into the same dictionary as the user's own
-    /// names, so handing it back whole would invent metadata nobody stored.
+    /// names, so handing it back whole would invent metadata nobody stored. What is left is a handful of
+    /// names per object, kept where nobody can write through them: freezing so few costs more than every
+    /// lookup it saves, once for each object a listing walks. The SDK reports a dictionary, read without
+    /// boxing its enumerator; anything else, or more names than are compared in turn, keeps a dictionary.
     /// </remarks>
     private static IReadOnlyDictionary<string, string> UserMetadata(IDictionary<string, string>? reported)
     {
-        if (reported is null)
+        if (reported is null || reported.Count == 0)
             return FrozenDictionary<string, string>.Empty;
 
-        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (reported.Count <= ObjectMetadata.MostNames
+            && reported is Dictionary<string, string> dictionary
+            && Kept(dictionary) is { } kept)
+            return kept.Count == 0 ? FrozenDictionary<string, string>.Empty : kept;
 
-        foreach (var (key, value) in reported.Where(pair => !IsProtocol(pair.Key)))
+        Dictionary<string, string>? metadata = null;
+
+        foreach (var (key, value) in reported)
         {
+            if (IsProtocol(key))
+                continue;
+
+            metadata ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             metadata[key] = value;
         }
 
-        return metadata.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+        return metadata is null ? FrozenDictionary<string, string>.Empty : metadata.AsReadOnly();
+    }
+
+    /// <summary>
+    /// Keeps the names of a reported dictionary that the protocol did not add.
+    /// </summary>
+    /// <param name="reported">Everything the SDK reported as metadata.</param>
+    /// <returns>The caller's names, or <see langword="null"/> when more came than were counted.</returns>
+    private static ObjectMetadata? Kept(Dictionary<string, string> reported)
+    {
+        var kept = new ObjectMetadata(reported.Count);
+
+        foreach (var (key, value) in reported)
+        {
+            if (!IsProtocol(key) && !kept.TrySet(key, value))
+                return null;
+        }
+
+        return kept;
     }
 
     /// <summary>
@@ -1466,13 +1583,67 @@ public sealed class MinioObjectStorage : IObjectStorage, IBuckets, IDisposable
             MediaType = content.ContentType?.MediaType ?? MediaTypes.Default,
             ETag = response.Headers.ETag?.Tag.Trim('"'),
             LastModified = content.LastModified,
-            Metadata = response.Headers
-                .Where(header => header.Key.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
-                .ToFrozenDictionary(
-                    header => header.Key[MetadataPrefix.Length..],
-                    header => string.Join(", ", header.Value),
-                    StringComparer.OrdinalIgnoreCase)
+            Metadata = UserMetadata(response.Headers)
         };
+    }
+
+    /// <summary>
+    /// Reads the metadata a caller wrote from the <c>x-amz-meta-</c> headers of a response.
+    /// </summary>
+    /// <param name="headers">The headers the server answered with.</param>
+    /// <returns>The names without their prefix, each with its values joined as the headers join them.</returns>
+    /// <remarks>
+    /// The headers are read as they arrived: these values are opaque to HTTP, so parsing them into a
+    /// validated copy, an array of strings per header, would change nothing but the cost. They are counted
+    /// first, so a handful is kept in an array of exactly that many.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, string> UserMetadata(HttpResponseHeaders headers)
+    {
+        var count = 0;
+
+        foreach (var (name, _) in headers.NonValidated)
+        {
+            if (name.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+                count++;
+        }
+
+        if (count == 0)
+            return FrozenDictionary<string, string>.Empty;
+
+        if (count <= ObjectMetadata.MostNames)
+            return Kept(headers, count);
+
+        Dictionary<string, string>? metadata = null;
+
+        foreach (var (name, values) in headers.NonValidated)
+        {
+            if (!name.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            metadata ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            metadata[name[MetadataPrefix.Length..]] = values.ToString();
+        }
+
+        return metadata is null ? FrozenDictionary<string, string>.Empty : metadata.AsReadOnly();
+    }
+
+    /// <summary>
+    /// Keeps the <c>x-amz-meta-</c> headers of a response, counted beforehand.
+    /// </summary>
+    /// <param name="headers">The headers the server answered with.</param>
+    /// <param name="count">How many of them carry the prefix.</param>
+    /// <returns>The names without their prefix, each with its values joined as the headers join them.</returns>
+    private static ObjectMetadata Kept(HttpResponseHeaders headers, int count)
+    {
+        var kept = new ObjectMetadata(count);
+
+        foreach (var (name, values) in headers.NonValidated)
+        {
+            if (name.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+                kept.TrySet(name[MetadataPrefix.Length..], values.ToString());
+        }
+
+        return kept;
     }
 
     /// <summary>

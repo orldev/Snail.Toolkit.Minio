@@ -1,0 +1,299 @@
+#nullable enable
+Snail.Toolkit.Minio.Adapters.IMinioClients
+Snail.Toolkit.Minio.Adapters.IMinioClients.Create(string! name, System.Action<Minio.IMinioClient!>? configureClient = null) -> Minio.IMinioClient!
+Snail.Toolkit.Minio.Adapters.MinioClientExtensions
+Snail.Toolkit.Minio.Adapters.MinioClientExtensions.extension(Minio.IMinioClient!)
+Snail.Toolkit.Minio.Adapters.MinioClientExtensions.extension(Minio.IMinioClient!).GetObjectAsync(string! bucket, string! name, System.Action<Minio.DataModel.Args.GetObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Minio.DataModel.ObjectStat!>!>!
+Snail.Toolkit.Minio.Adapters.MinioClientExtensions.extension(Minio.IMinioClient!).PutObjectAsync(string! bucket, System.Action<Minio.DataModel.Args.PutObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Minio.DataModel.Response.PutObjectResponse!>!>!
+Snail.Toolkit.Minio.Adapters.MinioClientExtensions.extension(Minio.IMinioClient!).RemoveObjectAsync(string! bucket, string! name, System.Action<Minio.DataModel.Args.RemoveObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Adapters.MinioClientExtensions.extension(Minio.IMinioClient!).StatObjectAsync(string! bucket, string! name, System.Action<Minio.DataModel.Args.StatObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Minio.DataModel.ObjectStat!>!>!
+Snail.Toolkit.Minio.Adapters.MinioClients
+Snail.Toolkit.Minio.Adapters.MinioClients.Create(string! name, System.Action<Minio.IMinioClient!>? configureClient = null) -> Minio.IMinioClient!
+Snail.Toolkit.Minio.Adapters.MinioClients.MinioClients(Microsoft.Extensions.Options.IOptionsMonitor<Snail.Toolkit.Minio.Adapters.MinioOptions!>! options, Snail.Toolkit.Minio.Adapters.MinioTransport! transport) -> void
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.CopyAsync(string! sourceBucket, string! sourceName, string! targetBucket, string! targetName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.CreateAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.Dispose() -> void
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.DownloadRangeToAsync(string! bucket, string! name, System.IO.Stream! destination, long offset, long length, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.DownloadToAsync(string! bucket, string! name, System.IO.Stream! destination, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.EnumerateAsync(string! bucket, Snail.Toolkit.Minio.Domain.ListOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.ExistsAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<bool>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.ExistsAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<bool>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.GetAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.ObjectContent!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.GetExpiryAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.ExpiryRule!>!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.ListAsync(string! bucket, Snail.Toolkit.Minio.Domain.ListOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.ObjectPage!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.MinioObjectStorage(string! name, Minio.IMinioClient! client, System.Net.Http.HttpClient! http, Microsoft.Extensions.Options.IOptionsMonitor<Snail.Toolkit.Minio.Adapters.MinioOptions!>! options, Microsoft.Extensions.Logging.ILogger<Snail.Toolkit.Minio.Adapters.MinioObjectStorage!>! logger) -> void
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.PutAsync(string! bucket, System.IO.Stream! content, Snail.Toolkit.Minio.Domain.UploadOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.RemoveAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.RemoveAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.SetExpiryAsync(string! bucket, System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.ExpiryRule!>! rules, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.SignedUploadUrlAsync(string! bucket, string! name, System.TimeSpan? lifetime = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<System.Uri!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.SignedUrlAsync(string! bucket, string! name, System.TimeSpan? lifetime = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<System.Uri!>!>!
+Snail.Toolkit.Minio.Adapters.MinioObjectStorage.StatAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Adapters.MinioOptions
+Snail.Toolkit.Minio.Adapters.MinioOptions.<Clone>$() -> Snail.Toolkit.Minio.Adapters.MinioOptions!
+Snail.Toolkit.Minio.Adapters.MinioOptions.AccessKey.get -> string?
+Snail.Toolkit.Minio.Adapters.MinioOptions.AccessKey.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakDuration.get -> System.TimeSpan
+Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakDuration.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakFailures.get -> int
+Snail.Toolkit.Minio.Adapters.MinioOptions.CircuitBreakFailures.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.ConnectionLifetime.get -> System.TimeSpan
+Snail.Toolkit.Minio.Adapters.MinioOptions.ConnectionLifetime.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.Endpoint.get -> string?
+Snail.Toolkit.Minio.Adapters.MinioOptions.Endpoint.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.Equals(Snail.Toolkit.Minio.Adapters.MinioOptions? other) -> bool
+Snail.Toolkit.Minio.Adapters.MinioOptions.IsSecure.get -> bool
+Snail.Toolkit.Minio.Adapters.MinioOptions.IsSecure.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.MaxConnectionsPerServer.get -> int?
+Snail.Toolkit.Minio.Adapters.MinioOptions.MaxConnectionsPerServer.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.MinioOptions() -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.Region.get -> string?
+Snail.Toolkit.Minio.Adapters.MinioOptions.Region.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.RetryAttempts.get -> int
+Snail.Toolkit.Minio.Adapters.MinioOptions.RetryAttempts.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.RetryDelay.get -> System.TimeSpan
+Snail.Toolkit.Minio.Adapters.MinioOptions.RetryDelay.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.SecretKey.get -> string?
+Snail.Toolkit.Minio.Adapters.MinioOptions.SecretKey.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.SessionToken.get -> string?
+Snail.Toolkit.Minio.Adapters.MinioOptions.SessionToken.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.SignedUrlLifetime.get -> System.TimeSpan
+Snail.Toolkit.Minio.Adapters.MinioOptions.SignedUrlLifetime.init -> void
+Snail.Toolkit.Minio.Adapters.MinioOptions.Timeout.get -> System.TimeSpan?
+Snail.Toolkit.Minio.Adapters.MinioOptions.Timeout.init -> void
+Snail.Toolkit.Minio.Adapters.MinioTransport
+Snail.Toolkit.Minio.Adapters.MinioTransport.MinioTransport() -> void
+Snail.Toolkit.Minio.Adapters.MinioTransport.MinioTransport(Microsoft.Extensions.Options.IOptionsMonitor<Snail.Toolkit.Minio.Adapters.MinioOptions!>! options) -> void
+Snail.Toolkit.Minio.Domain.ExpiryRule
+Snail.Toolkit.Minio.Domain.ExpiryRule.<Clone>$() -> Snail.Toolkit.Minio.Domain.ExpiryRule!
+Snail.Toolkit.Minio.Domain.ExpiryRule.Days.get -> int
+Snail.Toolkit.Minio.Domain.ExpiryRule.Days.init -> void
+Snail.Toolkit.Minio.Domain.ExpiryRule.Equals(Snail.Toolkit.Minio.Domain.ExpiryRule? other) -> bool
+Snail.Toolkit.Minio.Domain.ExpiryRule.ExpiryRule() -> void
+Snail.Toolkit.Minio.Domain.ExpiryRule.Id.get -> string!
+Snail.Toolkit.Minio.Domain.ExpiryRule.Id.init -> void
+Snail.Toolkit.Minio.Domain.ExpiryRule.IsEnabled.get -> bool
+Snail.Toolkit.Minio.Domain.ExpiryRule.IsEnabled.init -> void
+Snail.Toolkit.Minio.Domain.ExpiryRule.Prefix.get -> string!
+Snail.Toolkit.Minio.Domain.ExpiryRule.Prefix.init -> void
+Snail.Toolkit.Minio.Domain.ListOptions
+Snail.Toolkit.Minio.Domain.ListOptions.<Clone>$() -> Snail.Toolkit.Minio.Domain.ListOptions!
+Snail.Toolkit.Minio.Domain.ListOptions.Cursor.get -> string?
+Snail.Toolkit.Minio.Domain.ListOptions.Cursor.init -> void
+Snail.Toolkit.Minio.Domain.ListOptions.Equals(Snail.Toolkit.Minio.Domain.ListOptions? other) -> bool
+Snail.Toolkit.Minio.Domain.ListOptions.IsRecursive.get -> bool
+Snail.Toolkit.Minio.Domain.ListOptions.IsRecursive.init -> void
+Snail.Toolkit.Minio.Domain.ListOptions.ListOptions() -> void
+Snail.Toolkit.Minio.Domain.ListOptions.PageSize.get -> int
+Snail.Toolkit.Minio.Domain.ListOptions.PageSize.init -> void
+Snail.Toolkit.Minio.Domain.ListOptions.Prefix.get -> string?
+Snail.Toolkit.Minio.Domain.ListOptions.Prefix.init -> void
+Snail.Toolkit.Minio.Domain.ObjectContent
+Snail.Toolkit.Minio.Domain.ObjectContent.<Clone>$() -> Snail.Toolkit.Minio.Domain.ObjectContent!
+Snail.Toolkit.Minio.Domain.ObjectContent.Deconstruct(out Snail.Toolkit.Minio.Domain.StoredObject! Metadata, out System.IO.Stream! Stream) -> void
+Snail.Toolkit.Minio.Domain.ObjectContent.Dispose() -> void
+Snail.Toolkit.Minio.Domain.ObjectContent.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Snail.Toolkit.Minio.Domain.ObjectContent.Equals(Snail.Toolkit.Minio.Domain.ObjectContent? other) -> bool
+Snail.Toolkit.Minio.Domain.ObjectContent.Metadata.get -> Snail.Toolkit.Minio.Domain.StoredObject!
+Snail.Toolkit.Minio.Domain.ObjectContent.Metadata.init -> void
+Snail.Toolkit.Minio.Domain.ObjectContent.ObjectContent(Snail.Toolkit.Minio.Domain.StoredObject! Metadata, System.IO.Stream! Stream) -> void
+Snail.Toolkit.Minio.Domain.ObjectContent.Stream.get -> System.IO.Stream!
+Snail.Toolkit.Minio.Domain.ObjectContent.Stream.init -> void
+Snail.Toolkit.Minio.Domain.ObjectPage
+Snail.Toolkit.Minio.Domain.ObjectPage.<Clone>$() -> Snail.Toolkit.Minio.Domain.ObjectPage!
+Snail.Toolkit.Minio.Domain.ObjectPage.Cursor.get -> string?
+Snail.Toolkit.Minio.Domain.ObjectPage.Cursor.init -> void
+Snail.Toolkit.Minio.Domain.ObjectPage.Deconstruct(out System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.StoredObject!>! Objects, out string? Cursor) -> void
+Snail.Toolkit.Minio.Domain.ObjectPage.Equals(Snail.Toolkit.Minio.Domain.ObjectPage? other) -> bool
+Snail.Toolkit.Minio.Domain.ObjectPage.HasMore.get -> bool
+Snail.Toolkit.Minio.Domain.ObjectPage.ObjectPage(System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.StoredObject!>! Objects, string? Cursor) -> void
+Snail.Toolkit.Minio.Domain.ObjectPage.Objects.get -> System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.StoredObject!>!
+Snail.Toolkit.Minio.Domain.ObjectPage.Objects.init -> void
+Snail.Toolkit.Minio.Domain.ObjectPage.Prefixes.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Snail.Toolkit.Minio.Domain.ObjectPage.Prefixes.init -> void
+Snail.Toolkit.Minio.Domain.StorageError
+Snail.Toolkit.Minio.Domain.StorageError.<Clone>$() -> Snail.Toolkit.Minio.Domain.StorageError!
+Snail.Toolkit.Minio.Domain.StorageError.Cause.get -> System.Exception?
+Snail.Toolkit.Minio.Domain.StorageError.Cause.init -> void
+Snail.Toolkit.Minio.Domain.StorageError.Code.get -> string?
+Snail.Toolkit.Minio.Domain.StorageError.Code.init -> void
+Snail.Toolkit.Minio.Domain.StorageError.Deconstruct(out Snail.Toolkit.Minio.Domain.StorageErrorKind Kind, out string! Message) -> void
+Snail.Toolkit.Minio.Domain.StorageError.Equals(Snail.Toolkit.Minio.Domain.StorageError? other) -> bool
+Snail.Toolkit.Minio.Domain.StorageError.Kind.get -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageError.Kind.init -> void
+Snail.Toolkit.Minio.Domain.StorageError.Message.get -> string!
+Snail.Toolkit.Minio.Domain.StorageError.Message.init -> void
+Snail.Toolkit.Minio.Domain.StorageError.RetryAfter.get -> System.TimeSpan?
+Snail.Toolkit.Minio.Domain.StorageError.RetryAfter.init -> void
+Snail.Toolkit.Minio.Domain.StorageError.StatusCode.get -> int?
+Snail.Toolkit.Minio.Domain.StorageError.StatusCode.init -> void
+Snail.Toolkit.Minio.Domain.StorageError.StorageError(Snail.Toolkit.Minio.Domain.StorageErrorKind Kind, string! Message) -> void
+Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.AccessDenied = 1 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.Authorization = 0 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.BucketNotFound = 2 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.Connection = 6 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.InvalidArgument = 8 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.InvalidBucketName = 4 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.InvalidObjectName = 5 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.NotSupported = 9 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.ObjectDisposed = 10 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.ObjectNotFound = 3 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.Timeout = 7 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.Unexpected = 12 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageErrorKind.Upstream = 11 -> Snail.Toolkit.Minio.Domain.StorageErrorKind
+Snail.Toolkit.Minio.Domain.StorageResult
+Snail.Toolkit.Minio.Domain.StorageResult.<Clone>$() -> Snail.Toolkit.Minio.Domain.StorageResult!
+Snail.Toolkit.Minio.Domain.StorageResult.Equals(Snail.Toolkit.Minio.Domain.StorageResult? other) -> bool
+Snail.Toolkit.Minio.Domain.StorageResult.Error.get -> Snail.Toolkit.Minio.Domain.StorageError?
+Snail.Toolkit.Minio.Domain.StorageResult.IsSuccess.get -> bool
+Snail.Toolkit.Minio.Domain.StorageResult<T>
+Snail.Toolkit.Minio.Domain.StorageResult<T>.<Clone>$() -> Snail.Toolkit.Minio.Domain.StorageResult<T>!
+Snail.Toolkit.Minio.Domain.StorageResult<T>.Equals(Snail.Toolkit.Minio.Domain.StorageResult<T>? other) -> bool
+Snail.Toolkit.Minio.Domain.StorageResult<T>.Error.get -> Snail.Toolkit.Minio.Domain.StorageError?
+Snail.Toolkit.Minio.Domain.StorageResult<T>.IsSuccess.get -> bool
+Snail.Toolkit.Minio.Domain.StorageResult<T>.TryGetValue(out T? value) -> bool
+Snail.Toolkit.Minio.Domain.StorageResult<T>.Value.get -> T
+Snail.Toolkit.Minio.Domain.StorageResultExtensions
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension(Snail.Toolkit.Minio.Domain.StorageResult!)
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension(Snail.Toolkit.Minio.Domain.StorageResult!).Match(System.Action! onSuccess, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> void
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension(Snail.Toolkit.Minio.Domain.StorageResult!).Match<TOutput>(System.Func<TOutput>! onSuccess, System.Func<Snail.Toolkit.Minio.Domain.StorageError!, TOutput>! onFailure) -> TOutput
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension(System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!)
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension(System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!).MatchAsync(System.Action! onSuccess, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> System.Threading.Tasks.Task!
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(Snail.Toolkit.Minio.Domain.StorageResult<T>!)
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(Snail.Toolkit.Minio.Domain.StorageResult<T>!).Map<TOutput>(System.Func<T, TOutput>! map) -> Snail.Toolkit.Minio.Domain.StorageResult<TOutput>!
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(Snail.Toolkit.Minio.Domain.StorageResult<T>!).Match(System.Action<T>! onSuccess, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> void
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(Snail.Toolkit.Minio.Domain.StorageResult<T>!).Match<TOutput>(System.Func<T, TOutput>! onSuccess, System.Func<Snail.Toolkit.Minio.Domain.StorageError!, TOutput>! onFailure) -> TOutput
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(Snail.Toolkit.Minio.Domain.StorageResult<T>!).OnFailure(System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> Snail.Toolkit.Minio.Domain.StorageResult<T>!
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<T>!>!)
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<T>!>!).MapAsync<TOutput>(System.Func<T, TOutput>! map) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<TOutput>!>!
+Snail.Toolkit.Minio.Domain.StorageResultExtensions.extension<T>(System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<T>!>!).MatchAsync<TOutput>(System.Func<T, TOutput>! onSuccess, System.Func<Snail.Toolkit.Minio.Domain.StorageError!, TOutput>! onFailure) -> System.Threading.Tasks.Task<TOutput>!
+Snail.Toolkit.Minio.Domain.StoredObject
+Snail.Toolkit.Minio.Domain.StoredObject.<Clone>$() -> Snail.Toolkit.Minio.Domain.StoredObject!
+Snail.Toolkit.Minio.Domain.StoredObject.Bucket.get -> string!
+Snail.Toolkit.Minio.Domain.StoredObject.Bucket.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.ETag.get -> string?
+Snail.Toolkit.Minio.Domain.StoredObject.ETag.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.Equals(Snail.Toolkit.Minio.Domain.StoredObject? other) -> bool
+Snail.Toolkit.Minio.Domain.StoredObject.LastModified.get -> System.DateTimeOffset?
+Snail.Toolkit.Minio.Domain.StoredObject.LastModified.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.MediaType.get -> string!
+Snail.Toolkit.Minio.Domain.StoredObject.MediaType.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.Metadata.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>!
+Snail.Toolkit.Minio.Domain.StoredObject.Metadata.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.Name.get -> string!
+Snail.Toolkit.Minio.Domain.StoredObject.Name.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.Size.get -> long
+Snail.Toolkit.Minio.Domain.StoredObject.Size.init -> void
+Snail.Toolkit.Minio.Domain.StoredObject.StoredObject() -> void
+Snail.Toolkit.Minio.Domain.UploadOptions
+Snail.Toolkit.Minio.Domain.UploadOptions.<Clone>$() -> Snail.Toolkit.Minio.Domain.UploadOptions!
+Snail.Toolkit.Minio.Domain.UploadOptions.AppendExtension.get -> bool
+Snail.Toolkit.Minio.Domain.UploadOptions.AppendExtension.init -> void
+Snail.Toolkit.Minio.Domain.UploadOptions.Equals(Snail.Toolkit.Minio.Domain.UploadOptions? other) -> bool
+Snail.Toolkit.Minio.Domain.UploadOptions.MediaType.get -> string?
+Snail.Toolkit.Minio.Domain.UploadOptions.MediaType.init -> void
+Snail.Toolkit.Minio.Domain.UploadOptions.Metadata.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>?
+Snail.Toolkit.Minio.Domain.UploadOptions.Metadata.init -> void
+Snail.Toolkit.Minio.Domain.UploadOptions.Name.get -> string?
+Snail.Toolkit.Minio.Domain.UploadOptions.Name.init -> void
+Snail.Toolkit.Minio.Domain.UploadOptions.Size.get -> long?
+Snail.Toolkit.Minio.Domain.UploadOptions.Size.init -> void
+Snail.Toolkit.Minio.Domain.UploadOptions.UploadOptions() -> void
+Snail.Toolkit.Minio.Extensions.ServiceCollectionExtensions
+Snail.Toolkit.Minio.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!)
+Snail.Toolkit.Minio.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddKeyedMinio(string! name, Microsoft.Extensions.Configuration.IConfiguration! configuration, string? sectionName = null, System.Action<Minio.IMinioClient!>? configureClient = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Minio.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddMinio(Microsoft.Extensions.Configuration.IConfiguration! configuration, string! sectionName = "Minio", System.Action<Minio.IMinioClient!>? configureClient = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Minio.Ports.IBuckets
+Snail.Toolkit.Minio.Ports.IBuckets.CreateAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Ports.IBuckets.ExistsAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<bool>!>!
+Snail.Toolkit.Minio.Ports.IBuckets.GetExpiryAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.ExpiryRule!>!>!>!
+Snail.Toolkit.Minio.Ports.IBuckets.RemoveAsync(string! bucket, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Ports.IBuckets.SetExpiryAsync(string! bucket, System.Collections.Generic.IReadOnlyList<Snail.Toolkit.Minio.Domain.ExpiryRule!>! rules, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage
+Snail.Toolkit.Minio.Ports.IObjectStorage.CopyAsync(string! sourceBucket, string! sourceName, string! targetBucket, string! targetName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.DownloadRangeToAsync(string! bucket, string! name, System.IO.Stream! destination, long offset, long length, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.DownloadToAsync(string! bucket, string! name, System.IO.Stream! destination, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.EnumerateAsync(string! bucket, Snail.Toolkit.Minio.Domain.ListOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.ExistsAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<bool>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.GetAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.ObjectContent!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.ListAsync(string! bucket, Snail.Toolkit.Minio.Domain.ListOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.ObjectPage!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.PutAsync(string! bucket, System.IO.Stream! content, Snail.Toolkit.Minio.Domain.UploadOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.RemoveAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.SignedUploadUrlAsync(string! bucket, string! name, System.TimeSpan? lifetime = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<System.Uri!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.SignedUrlAsync(string! bucket, string! name, System.TimeSpan? lifetime = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<System.Uri!>!>!
+Snail.Toolkit.Minio.Ports.IObjectStorage.StatAsync(string! bucket, string! name, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Snail.Toolkit.Minio.Domain.StoredObject!>!>!
+const Snail.Toolkit.Minio.Adapters.MinioObjectStorage.ActivitySourceName = "Snail.Toolkit.Minio" -> string!
+const Snail.Toolkit.Minio.Adapters.MinioOptions.SectionName = "Minio" -> string!
+override Snail.Toolkit.Minio.Adapters.MinioOptions.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Adapters.MinioOptions.GetHashCode() -> int
+override Snail.Toolkit.Minio.Adapters.MinioOptions.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.ExpiryRule.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.ExpiryRule.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.ExpiryRule.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.ListOptions.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.ListOptions.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.ListOptions.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.ObjectContent.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.ObjectContent.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.ObjectContent.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.ObjectPage.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.ObjectPage.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.ObjectPage.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.StorageError.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.StorageError.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.StorageError.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.StorageResult.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.StorageResult.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.StorageResult.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.StorageResult<T>.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.StorageResult<T>.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.StorageResult<T>.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.StoredObject.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.StoredObject.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.StoredObject.ToString() -> string!
+override Snail.Toolkit.Minio.Domain.UploadOptions.Equals(object? obj) -> bool
+override Snail.Toolkit.Minio.Domain.UploadOptions.GetHashCode() -> int
+override Snail.Toolkit.Minio.Domain.UploadOptions.ToString() -> string!
+static Snail.Toolkit.Minio.Adapters.MinioClientExtensions.GetObjectAsync(this Minio.IMinioClient! client, string! bucket, string! name, System.Action<Minio.DataModel.Args.GetObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Minio.DataModel.ObjectStat!>!>!
+static Snail.Toolkit.Minio.Adapters.MinioClientExtensions.PutObjectAsync(this Minio.IMinioClient! client, string! bucket, System.Action<Minio.DataModel.Args.PutObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Minio.DataModel.Response.PutObjectResponse!>!>!
+static Snail.Toolkit.Minio.Adapters.MinioClientExtensions.RemoveObjectAsync(this Minio.IMinioClient! client, string! bucket, string! name, System.Action<Minio.DataModel.Args.RemoveObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>!
+static Snail.Toolkit.Minio.Adapters.MinioClientExtensions.StatObjectAsync(this Minio.IMinioClient! client, string! bucket, string! name, System.Action<Minio.DataModel.Args.StatObjectArgs!>? args = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<Minio.DataModel.ObjectStat!>!>!
+static Snail.Toolkit.Minio.Adapters.MinioOptions.operator !=(Snail.Toolkit.Minio.Adapters.MinioOptions? left, Snail.Toolkit.Minio.Adapters.MinioOptions? right) -> bool
+static Snail.Toolkit.Minio.Adapters.MinioOptions.operator ==(Snail.Toolkit.Minio.Adapters.MinioOptions? left, Snail.Toolkit.Minio.Adapters.MinioOptions? right) -> bool
+static Snail.Toolkit.Minio.Domain.ExpiryRule.operator !=(Snail.Toolkit.Minio.Domain.ExpiryRule? left, Snail.Toolkit.Minio.Domain.ExpiryRule? right) -> bool
+static Snail.Toolkit.Minio.Domain.ExpiryRule.operator ==(Snail.Toolkit.Minio.Domain.ExpiryRule? left, Snail.Toolkit.Minio.Domain.ExpiryRule? right) -> bool
+static Snail.Toolkit.Minio.Domain.ListOptions.operator !=(Snail.Toolkit.Minio.Domain.ListOptions? left, Snail.Toolkit.Minio.Domain.ListOptions? right) -> bool
+static Snail.Toolkit.Minio.Domain.ListOptions.operator ==(Snail.Toolkit.Minio.Domain.ListOptions? left, Snail.Toolkit.Minio.Domain.ListOptions? right) -> bool
+static Snail.Toolkit.Minio.Domain.ObjectContent.operator !=(Snail.Toolkit.Minio.Domain.ObjectContent? left, Snail.Toolkit.Minio.Domain.ObjectContent? right) -> bool
+static Snail.Toolkit.Minio.Domain.ObjectContent.operator ==(Snail.Toolkit.Minio.Domain.ObjectContent? left, Snail.Toolkit.Minio.Domain.ObjectContent? right) -> bool
+static Snail.Toolkit.Minio.Domain.ObjectPage.operator !=(Snail.Toolkit.Minio.Domain.ObjectPage? left, Snail.Toolkit.Minio.Domain.ObjectPage? right) -> bool
+static Snail.Toolkit.Minio.Domain.ObjectPage.operator ==(Snail.Toolkit.Minio.Domain.ObjectPage? left, Snail.Toolkit.Minio.Domain.ObjectPage? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageError.operator !=(Snail.Toolkit.Minio.Domain.StorageError? left, Snail.Toolkit.Minio.Domain.StorageError? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageError.operator ==(Snail.Toolkit.Minio.Domain.StorageError? left, Snail.Toolkit.Minio.Domain.StorageError? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageResult.Failure(Snail.Toolkit.Minio.Domain.StorageError! error) -> Snail.Toolkit.Minio.Domain.StorageResult!
+static Snail.Toolkit.Minio.Domain.StorageResult.Success() -> Snail.Toolkit.Minio.Domain.StorageResult!
+static Snail.Toolkit.Minio.Domain.StorageResult.operator !=(Snail.Toolkit.Minio.Domain.StorageResult? left, Snail.Toolkit.Minio.Domain.StorageResult? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageResult.operator ==(Snail.Toolkit.Minio.Domain.StorageResult? left, Snail.Toolkit.Minio.Domain.StorageResult? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageResult<T>.Failure(Snail.Toolkit.Minio.Domain.StorageError! error) -> Snail.Toolkit.Minio.Domain.StorageResult<T>!
+static Snail.Toolkit.Minio.Domain.StorageResult<T>.Success(T value) -> Snail.Toolkit.Minio.Domain.StorageResult<T>!
+static Snail.Toolkit.Minio.Domain.StorageResult<T>.operator !=(Snail.Toolkit.Minio.Domain.StorageResult<T>? left, Snail.Toolkit.Minio.Domain.StorageResult<T>? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageResult<T>.operator ==(Snail.Toolkit.Minio.Domain.StorageResult<T>? left, Snail.Toolkit.Minio.Domain.StorageResult<T>? right) -> bool
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.Map<T, TOutput>(this Snail.Toolkit.Minio.Domain.StorageResult<T>! result, System.Func<T, TOutput>! map) -> Snail.Toolkit.Minio.Domain.StorageResult<TOutput>!
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.MapAsync<T, TOutput>(this System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<T>!>! result, System.Func<T, TOutput>! map) -> System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<TOutput>!>!
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.Match(this Snail.Toolkit.Minio.Domain.StorageResult! result, System.Action! onSuccess, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> void
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.Match<T, TOutput>(this Snail.Toolkit.Minio.Domain.StorageResult<T>! result, System.Func<T, TOutput>! onSuccess, System.Func<Snail.Toolkit.Minio.Domain.StorageError!, TOutput>! onFailure) -> TOutput
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.Match<T>(this Snail.Toolkit.Minio.Domain.StorageResult<T>! result, System.Action<T>! onSuccess, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> void
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.Match<TOutput>(this Snail.Toolkit.Minio.Domain.StorageResult! result, System.Func<TOutput>! onSuccess, System.Func<Snail.Toolkit.Minio.Domain.StorageError!, TOutput>! onFailure) -> TOutput
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.MatchAsync(this System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult!>! result, System.Action! onSuccess, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> System.Threading.Tasks.Task!
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.MatchAsync<T, TOutput>(this System.Threading.Tasks.Task<Snail.Toolkit.Minio.Domain.StorageResult<T>!>! result, System.Func<T, TOutput>! onSuccess, System.Func<Snail.Toolkit.Minio.Domain.StorageError!, TOutput>! onFailure) -> System.Threading.Tasks.Task<TOutput>!
+static Snail.Toolkit.Minio.Domain.StorageResultExtensions.OnFailure<T>(this Snail.Toolkit.Minio.Domain.StorageResult<T>! result, System.Action<Snail.Toolkit.Minio.Domain.StorageError!>! onFailure) -> Snail.Toolkit.Minio.Domain.StorageResult<T>!
+static Snail.Toolkit.Minio.Domain.StoredObject.operator !=(Snail.Toolkit.Minio.Domain.StoredObject? left, Snail.Toolkit.Minio.Domain.StoredObject? right) -> bool
+static Snail.Toolkit.Minio.Domain.StoredObject.operator ==(Snail.Toolkit.Minio.Domain.StoredObject? left, Snail.Toolkit.Minio.Domain.StoredObject? right) -> bool
+static Snail.Toolkit.Minio.Domain.UploadOptions.operator !=(Snail.Toolkit.Minio.Domain.UploadOptions? left, Snail.Toolkit.Minio.Domain.UploadOptions? right) -> bool
+static Snail.Toolkit.Minio.Domain.UploadOptions.operator ==(Snail.Toolkit.Minio.Domain.UploadOptions? left, Snail.Toolkit.Minio.Domain.UploadOptions? right) -> bool
+static Snail.Toolkit.Minio.Extensions.ServiceCollectionExtensions.AddKeyedMinio(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! name, Microsoft.Extensions.Configuration.IConfiguration! configuration, string? sectionName = null, System.Action<Minio.IMinioClient!>? configureClient = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Minio.Extensions.ServiceCollectionExtensions.AddMinio(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration, string! sectionName = "Minio", System.Action<Minio.IMinioClient!>? configureClient = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+virtual Snail.Toolkit.Minio.Adapters.MinioTransport.CreateClient(string! name) -> System.Net.Http.HttpClient!
+virtual Snail.Toolkit.Minio.Adapters.MinioTransport.Dispose() -> void

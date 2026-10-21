@@ -1,0 +1,20 @@
+# The shared .editorconfig of every Snail library and server built on Snail.Sdk: copied whole, checked line by line by
+# the conformance check. Formatting only. The rules — which style is required, which analyzer fails the build, what a
+# test project is spared — ship in the Snail.Sdk package and change with its version, not with a copy of this file.
+# See docs/standard.md, "Code style".
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{csproj,props,targets,slnx,xml,yml,yaml,json,toml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

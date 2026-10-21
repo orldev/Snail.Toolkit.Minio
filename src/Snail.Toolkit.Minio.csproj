@@ -1,11 +1,9 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Snail.Sdk.Library">
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
-        <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!-- The audit (Toolkit/.audit/B.md, Minio) published it with Native AOT: the client warns and then reads wrong. -->
+        <SnailNotNativeBecause>Minio 7.0.0 is not trim- or AOT-safe: a native publish warns IL2026, IL3050 and IL2075 inside Minio.dll (its XmlSerializer use), and a bucket's lifecycle then reads as no rules and is reported as a success.</SnailNotNativeBecause>
         <PackageId>Snail.Toolkit.Minio</PackageId>
         <PackageTags>minio;s3;object-storage;aws-s3;streaming;presigned-url;resilience;dependency-injection</PackageTags>
         <Title>Snail.Toolkit.Minio</Title>
@@ -14,11 +12,6 @@
         <RepositoryUrl>https://github.com/orldev/Snail.Toolkit.Minio</RepositoryUrl>
         <Copyright>Toolkit, 2026</Copyright>
         <PackageProjectUrl>https://github.com/orldev/Snail.Toolkit.Minio</PackageProjectUrl>
-        <RepositoryType>GitHub</RepositoryType>
-        <PublishRepositoryUrl>true</PublishRepositoryUrl>
-        <EmbedUntrackedSources>true</EmbedUntrackedSources>
-        <IncludeSymbols>true</IncludeSymbols>
-        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
     </PropertyGroup>
@@ -26,13 +19,14 @@
     <ItemGroup>
         <None Include="..\README.md" Pack="true" PackagePath="\"/>
         <InternalsVisibleTo Include="Snail.Toolkit.Minio.Tests"/>
+        <InternalsVisibleTo Include="Snail.Toolkit.Minio.Benchmarks"/>
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
-        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
-        <PackageReference Include="Minio" Version="7.0.0" />
+        <PackageReference Include="Microsoft.Extensions.Configuration" />
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+        <PackageReference Include="Minio" />
     </ItemGroup>
 </Project>

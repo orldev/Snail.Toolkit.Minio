@@ -1,0 +1,26 @@
+# Dependabot keeps the actions the workflows call and the packages Directory.Packages.props pins current: every two
+# months, at 06:00 UTC on the first day of an odd month (there is no two-month interval, so a cron names the months),
+# the actions in one pull request, the packages' minor and patch updates in another, each major update in its own.
+# Security updates do not wait for the schedule. The shared workflows are called by their major tag (@v1): Dependabot
+# proposes the next major when Snail.Sdk releases one.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: cron
+      cronjob: '0 6 1 1,3,5,7,9,11 *'
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: cron
+      cronjob: '0 6 1 1,3,5,7,9,11 *'
+    groups:
+      packages:
+        patterns: ['*']
+        update-types: [minor, patch]

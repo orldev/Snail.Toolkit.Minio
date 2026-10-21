@@ -1,5 +1,4 @@
 using Snail.Toolkit.Minio.Domain;
-using Snail.Toolkit.Minio.Ports;
 using Snail.Toolkit.Minio.Tests.Infrastructure;
 
 namespace Snail.Toolkit.Minio.Tests;

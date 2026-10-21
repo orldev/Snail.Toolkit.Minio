@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Snail.Toolkit.Minio.Domain;
 using Snail.Toolkit.Minio.Ports;
 using Snail.Toolkit.Minio.Tests.Infrastructure;
@@ -80,6 +81,7 @@ public class ResourceCrashTests(MinioContainerFixture fixture)
     /// <c>try/finally</c> does, and it has to stay harmless.
     /// </summary>
     [Fact]
+    [SuppressMessage("Usage", "VSTHRD103", Justification = "A synchronous dispose after the asynchronous ones is what the test breaks it with.")]
     public async Task DisposingContentTwice_IsHarmless()
     {
         await fixture.WithBucketAsync(async bucket =>

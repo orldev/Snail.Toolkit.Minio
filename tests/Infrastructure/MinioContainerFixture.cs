@@ -148,12 +148,12 @@ public sealed class MinioContainerFixture : IAsyncLifetime
     /// <summary>
     /// Converts a Testcontainers connection string into the <c>host:port</c> form the client expects.
     /// </summary>
-    /// <param name="connectionString">The value reported by the container.</param>
+    /// <param name="reported">The value reported by the container.</param>
     /// <returns>The bare authority.</returns>
-    private static string ToAuthority(string connectionString)
-        => Uri.TryCreate(connectionString, UriKind.Absolute, out var uri)
+    private static string ToAuthority(string reported)
+        => Uri.TryCreate(reported, UriKind.Absolute, out var uri)
             ? uri.Authority
-            : connectionString.Trim('/');
+            : reported.Trim('/');
 }
 
 /// <summary>
