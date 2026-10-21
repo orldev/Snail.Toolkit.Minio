@@ -1,8 +1,8 @@
 name: build and tests
 
 # The shared library CI of Snail.Sdk: the tests, the API reference the build writes, the package validated against
-# the last release. The secrets go along so the tests pull the MinIO image signed in to Docker Hub
-# (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN), which refuses anonymous pulls.
+# the last release. The MinIO image the tests pull is public, so no secret is needed; the secrets go along for the
+# shared workflow's optional Docker Hub login, should the image ever need one again.
 
 on:
   push:

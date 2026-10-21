@@ -31,9 +31,12 @@ public sealed class MinioContainerFixture : IAsyncLifetime
     /// The Minio image the suite runs against.
     /// </summary>
     /// <remarks>
-    /// Pinned explicitly: an explicit tag keeps runs reproducible instead of drifting with <c>latest</c>.
+    /// Pinned explicitly: an explicit tag keeps runs reproducible instead of drifting with <c>latest</c>. The
+    /// image is a build of MinIO from source that stays public: <c>minio/minio</c> left Docker Hub (404 on
+    /// 2026-10-21) and quay.io gives it only to a signed-in pull, so a suite pinned to it could not start
+    /// anywhere.
     /// </remarks>
-    private const string Image = "minio/minio:RELEASE.2025-09-07T16-13-09Z";
+    private const string Image = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z";
 
     private readonly MinioContainer _container = new MinioBuilder(Image).Build();
 
