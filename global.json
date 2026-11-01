@@ -1,18 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/global.json",
-
   "//": "The shared global.json of every Snail library and server; the conformance check compares its sdk section by value. The build's verdict depends on code style analyzers, and those ship WITH THE SDK: a machine holding another feature band applies other rules to the same sources, and the build that passes here fails there for reasons neither side can see. Pinning the band is what makes 'the build is green' a statement about the code.",
-
   "//rollForward": "latestPatch keeps 10.0.3xx and takes its fixes; it refuses 10.0.4xx, which is exactly the move that would change the analyzers. The band is raised deliberately, here first, with a run of every suite, rather than by whoever updates their SDK first.",
-
   "sdk": {
     "version": "10.0.302",
     "rollForward": "latestPatch",
     "allowPrerelease": false
   },
-
   "msbuild-sdks": {
-    "Snail.Sdk": "0.1.0",
-    "Snail.Sdk.Library": "0.1.0"
+    "Snail.Sdk": "0.4.1",
+    "Snail.Sdk.Library": "0.4.1"
   }
 }
