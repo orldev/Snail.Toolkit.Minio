@@ -4,7 +4,7 @@ name: performance
 
 on:
   schedule:
-    - cron: '0 4 1 */2 *'
+    - cron: '0 4 1 1,7 *'
   workflow_dispatch:
 
 permissions:
